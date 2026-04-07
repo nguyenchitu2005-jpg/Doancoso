@@ -1,0 +1,573 @@
+{% extends "base.html" %}
+
+{% block title %}{{ app_title }} | AI Proctoring System{% endblock %}
+
+{% block body %}
+  <div class="app-shell" data-initial-tab="{{ selected_tab }}">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <p class="brand-title">{{ app_title }}</p>
+        <p class="brand-subtitle">AI PROCTORING SYSTEM</p>
+      </div>
+
+      <nav class="sidebar-nav" aria-label="Điều hướng chính">
+        <button class="nav-item is-active" type="button" data-tab="overview">
+          <span class="nav-pill"></span>
+          <span class="material-symbols-outlined">dashboard</span>
+          <span>Tổng quan</span>
+        </button>
+        <button class="nav-item" type="button" data-tab="review">
+          <span class="nav-pill"></span>
+          <span class="material-symbols-outlined">video_library</span>
+          <span>Hậu kiểm</span>
+        </button>
+        <button class="nav-item" type="button" data-tab="students">
+          <span class="nav-pill"></span>
+          <span class="material-symbols-outlined">group</span>
+          <span>Thí sinh</span>
+        </button>
+        <button class="nav-item" type="button" data-tab="settings">
+          <span class="nav-pill"></span>
+          <span class="material-symbols-outlined">tune</span>
+          <span>Cấu hình AI</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status-card">
+          <div>
+            <p class="micro-label">System Health</p>
+            <p class="status-name">AI Engines</p>
+          </div>
+          <span class="status-dot"></span>
+        </div>
+
+        <div class="user-card">
+          <div class="avatar">AD</div>
+          <div>
+            <p class="user-name">Admin User</p>
+            <p class="user-role">Security Lead</p>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div class="topbar-copy">
+          <p class="eyebrow">{{ dashboard.system_name }}</p>
+          <h1 id="page-title">{{ page_title }}</h1>
+        </div>
+
+        <div class="topbar-tools">
+          <label class="search-field">
+            <span class="material-symbols-outlined">search</span>
+            <input type="search" placeholder="Tìm kiếm phòng thi, thí sinh hoặc sự cố...">
+          </label>
+          <button class="icon-button" type="button" aria-label="Thông báo">
+            <span class="material-symbols-outlined">notifications</span>
+          </button>
+          <button class="icon-button" type="button" aria-label="Tài khoản">
+            <span class="material-symbols-outlined">account_circle</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="page-stack">
+        <section class="page-section is-active" id="overview">
+          <div class="hero-row">
+            <div class="hero-copy">
+              <p class="section-tag">GLOBAL MONITORING</p>
+              <h2>Giám sát toàn cục cho {{ dashboard.overview.rooms_online }} phòng thi đang hoạt động.</h2>
+              <p class="section-description">
+                Giao diện này đã được chuyển sang template FastAPI để bạn có thể nối dữ liệu backend thật từ YOLO, video service hoặc cơ sở dữ liệu sau này.
+              </p>
+            </div>
+
+            <div class="hero-kpis">
+              <article class="kpi-card">
+                <p class="micro-label">Total Integrity</p>
+                <p class="kpi-value">{{ dashboard.overview.integrity_score }}</p>
+              </article>
+              <article class="kpi-card kpi-card-primary">
+                <p class="micro-label">Active Sessions</p>
+                <p class="kpi-value">{{ "{:,}".format(dashboard.overview.active_sessions) }}</p>
+              </article>
+            </div>
+          </div>
+
+          <div class="oversight-grid">
+            <article class="panel chart-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-title">Violation Distribution</p>
+                  <p class="panel-subtitle">Mức độ phân bổ tín hiệu vi phạm theo từng nhóm hành vi.</p>
+                </div>
+                <div class="legend-row">
+                  <span><i class="legend-dot dark"></i>Rời khung hình</span>
+                  <span><i class="legend-dot steel"></i>Thêm người</span>
+                  <span><i class="legend-dot red"></i>Dùng điện thoại</span>
+                </div>
+              </div>
+
+              <div class="distribution-chart" aria-hidden="true">
+                <div class="bar-group">
+                  <div class="stacked-bar">
+                    <span class="bar-segment bar-dark" style="height: 52%"></span>
+                    <span class="bar-segment bar-steel" style="height: 28%"></span>
+                    <span class="bar-segment bar-red" style="height: 20%"></span>
+                  </div>
+                  <small>MON</small>
+                </div>
+                <div class="bar-group">
+                  <div class="stacked-bar">
+                    <span class="bar-segment bar-dark" style="height: 64%"></span>
+                    <span class="bar-segment bar-steel" style="height: 20%"></span>
+                    <span class="bar-segment bar-red" style="height: 16%"></span>
+                  </div>
+                  <small>TUE</small>
+                </div>
+                <div class="bar-group">
+                  <div class="stacked-bar">
+                    <span class="bar-segment bar-dark" style="height: 46%"></span>
+                    <span class="bar-segment bar-steel" style="height: 34%"></span>
+                    <span class="bar-segment bar-red" style="height: 20%"></span>
+                  </div>
+                  <small>WED</small>
+                </div>
+                <div class="bar-group">
+                  <div class="stacked-bar">
+                    <span class="bar-segment bar-dark" style="height: 59%"></span>
+                    <span class="bar-segment bar-steel" style="height: 18%"></span>
+                    <span class="bar-segment bar-red" style="height: 23%"></span>
+                  </div>
+                  <small>THU</small>
+                </div>
+                <div class="bar-group">
+                  <div class="stacked-bar">
+                    <span class="bar-segment bar-dark" style="height: 40%"></span>
+                    <span class="bar-segment bar-steel" style="height: 35%"></span>
+                    <span class="bar-segment bar-red" style="height: 25%"></span>
+                  </div>
+                  <small>FRI</small>
+                </div>
+              </div>
+            </article>
+
+            <article class="panel critical-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-title">Critical Alerts</p>
+                  <p class="panel-subtitle">Các tín hiệu cần xử lý tức thời.</p>
+                </div>
+              </div>
+
+              <div class="alert-list">
+                {% for alert in dashboard.overview.alerts %}
+                  <article class="alert-card">
+                    <span class="material-symbols-outlined">{{ alert.icon }}</span>
+                    <div>
+                      <p>{{ alert.title }}</p>
+                      <small>{{ alert.meta }}</small>
+                    </div>
+                  </article>
+                {% endfor %}
+              </div>
+
+              <button class="primary-button" type="button">Resolve All</button>
+            </article>
+          </div>
+
+          <section class="panel surveillance-panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-title">Room Surveillance</p>
+                <p class="panel-subtitle">Tình trạng xử lý theo từng không gian thi.</p>
+              </div>
+              <div class="view-toggle">
+                <button class="mini-button is-selected" type="button">
+                  <span class="material-symbols-outlined">grid_view</span>
+                </button>
+                <button class="mini-button" type="button">
+                  <span class="material-symbols-outlined">view_list</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="room-grid">
+              <article class="room-card">
+                <div class="room-preview room-preview-blue"><span class="room-badge success">Processing</span></div>
+                <div class="room-copy"><div><p class="room-name">Room A</p><small>Main Lecture Hall</small></div><p class="room-count">42 / 50</p></div>
+                <div class="room-status"><div class="signal-dots"><span></span><span></span><span></span></div><small class="warning-copy">3 Warnings</small></div>
+              </article>
+              <article class="room-card">
+                <div class="room-preview room-preview-neutral"><span class="room-badge muted">Completed</span></div>
+                <div class="room-copy"><div><p class="room-name">Room B</p><small>Computer Lab 2</small></div><p class="room-count">24 / 24</p></div>
+                <div class="room-status"><div class="signal-dots"><span></span><span></span></div><small class="safe-copy">No Violations</small></div>
+              </article>
+              <article class="room-card">
+                <div class="room-preview room-preview-gold"><span class="room-badge success">Processing</span></div>
+                <div class="room-copy"><div><p class="room-name">Room C</p><small>Seminar Wing</small></div><p class="room-count">12 / 15</p></div>
+                <div class="room-status"><div class="signal-dots"><span></span></div><small class="warning-copy">1 Warning</small></div>
+              </article>
+              <article class="room-card danger">
+                <div class="room-preview room-preview-danger"><span class="room-badge danger">Suspended</span></div>
+                <div class="room-copy"><div><p class="room-name">Room D</p><small>Science Block</small></div><p class="room-count">30 / 30</p></div>
+                <div class="room-status"><div class="signal-dots"><span></span><span></span><span></span><span></span></div><small class="danger-copy">Critical Breach</small></div>
+              </article>
+            </div>
+          </section>
+
+          <div class="bottom-grid">
+            <article class="panel compact-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-title">Anomaly Types</p>
+                  <p class="panel-subtitle">Tỷ trọng cảnh báo trong 24 giờ gần nhất.</p>
+                </div>
+              </div>
+              <div class="metric-list">
+                <div class="metric-row"><span>Rời khung hình</span><strong>65%</strong></div>
+                <div class="metric-row"><span>Thêm người</span><strong>20%</strong></div>
+                <div class="metric-row"><span>Dùng điện thoại</span><strong>15%</strong></div>
+              </div>
+            </article>
+
+            <article class="panel power-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-title">System Processing Power</p>
+                  <p class="panel-subtitle">Độ ổn định của cụm AI proctoring hiện tại.</p>
+                </div>
+                <div class="latency-block">
+                  <strong>0.2s</strong>
+                  <small>Average AI Latency</small>
+                </div>
+              </div>
+
+              <div class="power-bars" aria-hidden="true">
+                <span style="height: 38%"></span>
+                <span style="height: 54%"></span>
+                <span style="height: 78%"></span>
+                <span style="height: 88%"></span>
+                <span style="height: 96%"></span>
+                <span style="height: 74%"></span>
+                <span style="height: 58%"></span>
+                <span style="height: 65%"></span>
+                <span style="height: 47%"></span>
+                <span style="height: 34%"></span>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="page-section" id="review">
+          <div class="review-grid">
+            <div class="review-main">
+              <article class="panel upload-panel">
+                <div class="panel-header">
+                  <div>
+                    <p class="panel-title">Tải lên Video Hậu Kiểm Mới</p>
+                    <p class="panel-subtitle">Định dạng hỗ trợ: .mp4, .avi</p>
+                  </div>
+                </div>
+
+                <form class="upload-form" action="{{ url_for('upload_review_video') }}" method="post" enctype="multipart/form-data">
+                  <input id="review-video-file" class="file-input" type="file" name="video_file" accept=".mp4,.avi,.mov,.mkv" required>
+                  <div class="upload-dropzone">
+                    <span class="material-symbols-outlined">cloud_upload</span>
+                    <p>
+                      Kéo và thả tệp vào đây hoặc
+                      <button type="button" class="text-link upload-trigger" data-file-trigger="review-video-file">chọn từ máy tính</button>
+                    </p>
+                    <small>Dung lượng tối đa 500MB</small>
+                  </div>
+                  <div class="form-actions">
+                    <p id="selected-file-name" class="selected-file-name">Chưa chọn tệp nào</p>
+                    <button class="primary-button" type="submit">Tải video</button>
+                  </div>
+                </form>
+
+                {% if upload_feedback %}
+                  <div class="feedback-card {{ upload_feedback.status }}">
+                    <span class="material-symbols-outlined">
+                      {% if upload_feedback.status == "success" %}check_circle{% else %}error{% endif %}
+                    </span>
+                    <p>{{ upload_feedback.message }}</p>
+                  </div>
+                {% endif %}
+
+                {% if detection_feedback %}
+                  <div class="feedback-card {{ detection_feedback.status }}">
+                    <span class="material-symbols-outlined">
+                      {% if detection_feedback.status == "success" %}analytics{% else %}info{% endif %}
+                    </span>
+                    <p>{{ detection_feedback.message }}</p>
+                  </div>
+                {% endif %}
+
+                {% if recent_uploads %}
+                  <div class="upload-list">
+                    <p class="micro-label">Tệp đã tải gần đây</p>
+                    {% for item in recent_uploads %}
+                      <div class="upload-item">
+                        <span>{{ item.filename }}</span>
+                        <small>{{ item.size_label }}</small>
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+
+                {% if recent_results %}
+                  <div class="upload-list">
+                    <p class="micro-label">Kết quả hậu kiểm gần đây</p>
+                    {% for item in recent_results %}
+                      <div class="upload-item">
+                        <span>{{ item.filename }}</span>
+                        <small>{{ item.analysis_mode }} • {{ item.violations }} cảnh báo • {{ item.status }}</small>
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+
+                <div class="progress-card">
+                  <div class="progress-copy">
+                    <span class="material-symbols-outlined">sync</span>
+                    <span>Đang phân tích hành vi AI...</span>
+                  </div>
+                  <div class="progress-track"><span style="width: 65%"></span></div>
+                </div>
+              </article>
+
+              <article class="video-stage">
+                <div class="stage-flag"><span class="signal-live"></span>Phát hiện nhiều người</div>
+                <div class="stage-scene">
+                  <div class="scene-glow"></div>
+                  <div class="scene-figure figure-left"></div>
+                  <div class="scene-figure figure-right"></div>
+                  <div class="scene-desk"></div>
+                </div>
+              </article>
+
+              <div class="candidate-grid">
+                <article class="panel candidate-card">
+                  <div class="identity-row">
+                    <div class="avatar portrait">LH</div>
+                    <div>
+                      <h3>Lê Minh Hoàng</h3>
+                      <p>Mã sinh viên: #VN-99201</p>
+                    </div>
+                  </div>
+
+                  <div class="detail-grid">
+                    <div><p class="micro-label">Môn học</p><strong>Học máy nâng cao</strong></div>
+                    <div><p class="micro-label">Phòng thi</p><strong>Virtual Lab 04</strong></div>
+                    <div><p class="micro-label">Thời lượng thi</p><strong>02:45:00</strong></div>
+                    <div><p class="micro-label">Trạng thái thiết bị</p><strong class="safe-copy">Đã xác minh</strong></div>
+                  </div>
+                </article>
+
+                <article class="risk-card">
+                  <p class="micro-label">Đánh giá rủi ro</p>
+                  <strong>CAO</strong>
+                  <p>Hệ thống đã ghi nhận 4 sự cố nghiêm trọng trong 45 phút gần nhất.</p>
+                  <div class="risk-actions">
+                    <button class="primary-button" type="button">Xác nhận vi phạm</button>
+                    <button class="secondary-button" type="button">Bỏ qua</button>
+                  </div>
+                </article>
+              </div>
+            </div>
+
+            <aside class="incident-rail">
+              <div class="rail-header">
+                <h3>Dòng thời gian vi phạm</h3>
+                <span class="chip">{{ dashboard.review_timeline | length }} sự cố</span>
+              </div>
+              <div class="incident-list">
+                {% for incident in dashboard.review_timeline %}
+                  <article class="incident-card">
+                    <small>{{ incident.time }}</small>
+                    <p>{{ incident.label }}</p>
+                    <span class="chip risk-{{ incident.risk }}">Độ tin cậy {{ incident.confidence }}</span>
+                  </article>
+                {% endfor %}
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="page-section" id="students">
+          <div class="hero-row hero-row-tight">
+            <div class="hero-copy">
+              <p class="section-tag">POST-EXAM AUDIT</p>
+              <h2>Danh sách thí sinh và hồ sơ vi phạm hậu kiểm.</h2>
+              <p class="section-description">Bảng này đang được đổ dữ liệu từ service Python. Sau này bạn chỉ cần thay dữ liệu giả bằng truy vấn database hoặc kết quả phát hiện YOLO.</p>
+            </div>
+            <div class="student-kpis">
+              <article class="kpi-card"><p class="micro-label">Tổng thí sinh</p><p class="kpi-value">1,284</p></article>
+              <article class="kpi-card"><p class="micro-label">Rủi ro cao</p><p class="kpi-value">42</p></article>
+            </div>
+          </div>
+
+          <section class="panel filter-panel">
+            <div class="filter-row">
+              <div class="filter-group">
+                <p class="micro-label">Mức độ rủi ro</p>
+                <div class="chip-row">
+                  <button class="chip filter-chip is-selected" type="button" data-risk="all">Tất cả</button>
+                  <button class="chip filter-chip" type="button" data-risk="high">Cao (Critical)</button>
+                  <button class="chip filter-chip" type="button" data-risk="medium">Trung bình</button>
+                  <button class="chip filter-chip" type="button" data-risk="low">Thấp</button>
+                </div>
+              </div>
+              <button class="primary-button" type="button"><span class="material-symbols-outlined">download</span>Xuất báo cáo (CSV)</button>
+            </div>
+
+            <div class="table-wrap">
+              <table class="student-table">
+                <thead>
+                  <tr>
+                    <th>Thí sinh</th>
+                    <th>ID / Phòng thi</th>
+                    <th>Hành vi ghi nhận</th>
+                    <th>Tổng cảnh báo</th>
+                    <th>Mức độ rủi ro</th>
+                    <th>Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody id="student-table-body"></tbody>
+              </table>
+            </div>
+
+            <div class="table-footer">
+              <p id="student-table-summary">Hiển thị 0 mục</p>
+              <div class="pagination">
+                <button class="page-button" type="button">1</button>
+                <button class="page-button ghost" type="button">2</button>
+                <button class="page-button ghost" type="button">3</button>
+              </div>
+            </div>
+          </section>
+
+          <div class="bottom-grid bottom-grid-students">
+            <article class="panel trend-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-title">Xu hướng vi phạm (24h qua)</p>
+                  <p class="panel-subtitle">Dữ liệu hậu kiểm được chia theo các mốc giờ cao điểm.</p>
+                </div>
+              </div>
+              <div class="trend-bars" aria-hidden="true">
+                <div><span style="height: 28%"></span><small>08:00</small></div>
+                <div><span style="height: 45%"></span><small>12:00</small></div>
+                <div><span class="highlight" style="height: 62%"></span><small>14:00</small></div>
+                <div><span style="height: 34%"></span><small>16:00</small></div>
+                <div><span style="height: 24%"></span><small>20:00</small></div>
+                <div><span style="height: 51%"></span><small>Hiện tại</small></div>
+              </div>
+            </article>
+
+            <article class="system-status-panel">
+              <p class="panel-title">Tình trạng AI Proctor</p>
+              <div class="system-metric"><span>Độ trễ hệ thống</span><strong>145ms</strong></div>
+              <div class="system-metric"><span>Xử lý khung hình</span><strong>60 FPS</strong></div>
+              <div class="system-metric"><span>Face API Accuracy</span><strong>99.8%</strong></div>
+              <div class="system-divider"></div>
+              <p class="system-online">System Online</p>
+              <small>Uptime: 14 ngày, 3 giờ, 22 phút</small>
+            </article>
+          </div>
+        </section>
+
+        <section class="page-section" id="settings">
+          <div class="hero-copy settings-copy">
+            <p class="section-tag">SYSTEM CONFIGURATION</p>
+            <h2>Cấu hình hệ thống AI cho luồng giám sát trực tiếp.</h2>
+            <p class="section-description">Đây là khối cấu hình mẫu để bạn nối tiếp với thông số YOLO, ngưỡng phát hiện, chu kỳ lấy mẫu hoặc cấu hình camera.</p>
+          </div>
+
+          <div class="settings-grid">
+            <article class="panel config-card">
+              <div class="config-card-header">
+                <span class="icon-badge"><span class="material-symbols-outlined">troubleshoot</span></span>
+                <div>
+                  <p class="panel-title">Ngưỡng Nhận diện (YOLO)</p>
+                  <p class="panel-subtitle">Tinh chỉnh độ nhạy và chu kỳ lấy mẫu khung hình.</p>
+                </div>
+              </div>
+
+              <div class="setting-block">
+                <div class="setting-copy">
+                  <p>Confidence Threshold</p>
+                  <strong id="confidence-value">0.75</strong>
+                </div>
+                <input id="confidence-range" type="range" min="0.4" max="0.95" step="0.01" value="0.75">
+                <div class="range-labels"><small>Nhạy bén</small><small>Chính xác</small></div>
+              </div>
+
+              <div class="setting-block">
+                <div class="setting-copy">
+                  <p>Extraction Interval</p>
+                  <strong><span id="interval-value">2.0</span> giây</strong>
+                </div>
+                <input id="interval-range" type="range" min="0.5" max="5" step="0.5" value="2">
+                <div class="callout-box">Giá trị thấp tăng độ nhạy đối với hành vi ngắn, nhưng sẽ dùng nhiều GPU hơn.</div>
+              </div>
+            </article>
+
+            <article class="panel toggle-card">
+              <div class="config-card-header">
+                <span class="icon-badge"><span class="material-symbols-outlined">visibility</span></span>
+                <div>
+                  <p class="panel-title">Nhận diện hành vi</p>
+                  <p class="panel-subtitle">Bật các bộ dò chính cho phòng thi trực tuyến.</p>
+                </div>
+              </div>
+
+              <div class="toggle-list">
+                <label class="toggle-row"><div><p>Liếc nhìn xung quanh</p><small>Phát hiện hướng mắt bất thường.</small></div><input type="checkbox" checked><span class="toggle-ui"></span></label>
+                <label class="toggle-row"><div><p>Sử dụng điện thoại</p><small>Nhận diện thiết bị di động.</small></div><input type="checkbox" checked><span class="toggle-ui"></span></label>
+                <label class="toggle-row"><div><p>Trao đổi nhóm</p><small>Phát hiện nhiều người trong khung hình.</small></div><input type="checkbox"><span class="toggle-ui"></span></label>
+                <label class="toggle-row"><div><p>Tiếng ồn bất thường</p><small>Phân tích cường độ âm thanh.</small></div><input type="checkbox" checked><span class="toggle-ui"></span></label>
+              </div>
+
+              <div class="stack-buttons">
+                <button class="primary-button" type="button">Lưu cấu hình</button>
+                <button class="text-button" type="button">Khôi phục mặc định</button>
+              </div>
+            </article>
+
+            <article class="panel metrics-card">
+              <div class="config-card-header">
+                <span class="icon-badge"><span class="material-symbols-outlined">monitoring</span></span>
+                <div>
+                  <p class="panel-title">Phân tích hiệu năng</p>
+                  <p class="panel-subtitle">Chỉ số vận hành thực tế của hệ thống AI.</p>
+                </div>
+              </div>
+              <div class="mini-metrics">
+                <article><small>Độ trễ xử lý</small><strong>~145ms</strong></article>
+                <article><small>Tải lượng GPU</small><strong>42%</strong></article>
+              </div>
+            </article>
+
+            <article class="simulation-banner">
+              <div>
+                <p class="section-tag inverse">LIVE FEED MODE</p>
+                <h3>Chế độ mô phỏng cho AI proctoring.</h3>
+                <p>Xem trước cách hệ thống áp dụng cấu hình hiện tại vào dữ liệu mẫu trước khi triển khai thật.</p>
+                <button class="secondary-hero-button" type="button"><span class="material-symbols-outlined">play_arrow</span>Bắt đầu mô phỏng</button>
+              </div>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script id="dashboard-data" type="application/json">{{ dashboard | tojson }}</script>
+  <script src="{{ url_for('static', path='/js/dashboard.js') }}"></script>
+{% endblock %}
