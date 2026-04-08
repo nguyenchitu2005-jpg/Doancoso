@@ -283,8 +283,13 @@
                     <small>Dung lượng tối đa 500MB</small>
                   </div>
                   <div class="form-actions">
-                    <p id="selected-file-name" class="selected-file-name">Chưa chọn tệp nào</p>
-                    <button class="primary-button" type="submit">Tải video</button>
+                    <div class="selected-file-block">
+                      <div class="selected-file-row">
+                        <p id="selected-file-name" class="selected-file-name">Chưa chọn tệp nào</p>
+                        <button id="clear-selected-file" class="file-clear-button" type="button" hidden aria-label="Hủy tệp đã chọn">x</button>
+                      </div>
+                    </div>
+                    <button id="upload-submit-button" class="primary-button" type="submit" disabled>Tải video</button>
                   </div>
                 </form>
 
@@ -306,47 +311,32 @@
                   </div>
                 {% endif %}
 
-                {% if recent_uploads %}
-                  <div class="upload-list">
-                    <p class="micro-label">Tệp đã tải gần đây</p>
-                    {% for item in recent_uploads %}
-                      <div class="upload-item">
-                        <span>{{ item.filename }}</span>
-                        <small>{{ item.size_label }}</small>
-                      </div>
-                    {% endfor %}
-                  </div>
-                {% endif %}
-
-                {% if recent_results %}
-                  <div class="upload-list">
-                    <p class="micro-label">Kết quả hậu kiểm gần đây</p>
-                    {% for item in recent_results %}
-                      <div class="upload-item">
-                        <span>{{ item.filename }}</span>
-                        <small>{{ item.analysis_mode }} • {{ item.violations }} cảnh báo • {{ item.status }}</small>
-                      </div>
-                    {% endfor %}
-                  </div>
-                {% endif %}
-
-                <div class="progress-card">
-                  <div class="progress-copy">
-                    <span class="material-symbols-outlined">sync</span>
-                    <span>Đang phân tích hành vi AI...</span>
-                  </div>
-                  <div class="progress-track"><span style="width: 65%"></span></div>
-                </div>
               </article>
 
-              <article class="video-stage">
-                <div class="stage-flag"><span class="signal-live"></span>Phát hiện nhiều người</div>
-                <div class="stage-scene">
-                  <div class="scene-glow"></div>
-                  <div class="scene-figure figure-left"></div>
-                  <div class="scene-figure figure-right"></div>
-                  <div class="scene-desk"></div>
+              <article class="video-stage {% if latest_review.video_url %}has-video{% endif %}">
+                <div class="stage-flag">
+                  <span class="signal-live"></span>
+                  <span id="review-stage-flag-text">
+                    {% if latest_review.incidents %}
+                      {{ latest_review.incidents[0].label }}
+                    {% elif latest_review.video_url %}
+                      Dang phat lai video hau kiem
+                    {% else %}
+                      Chua co video de hau kiem
+                    {% endif %}
+                  </span>
                 </div>
+
+                {% if latest_review.video_url %}
+                  <video id="review-video-player" class="review-video-player" controls preload="metadata" src="{{ latest_review.video_url }}"></video>
+                {% else %}
+                  <div class="stage-scene">
+                    <div class="scene-glow"></div>
+                    <div class="scene-figure figure-left"></div>
+                    <div class="scene-figure figure-right"></div>
+                    <div class="scene-desk"></div>
+                  </div>
+                {% endif %}
               </article>
 
               <div class="candidate-grid">
@@ -382,14 +372,22 @@
             <aside class="incident-rail">
               <div class="rail-header">
                 <h3>Dòng thời gian vi phạm</h3>
-                <span class="chip">{{ dashboard.review_timeline | length }} sự cố</span>
+                <span id="incident-count-chip" class="chip">{{ latest_review.incidents | length }} su co</span>
               </div>
-              <div class="incident-list">
-                {% for incident in dashboard.review_timeline %}
-                  <article class="incident-card">
+              <div id="incident-list" class="incident-list">
+                {% for incident in latest_review.incidents %}
+                  <article class="incident-card" data-incident-time="{{ incident.time_seconds | default(0) }}" data-incident-label="{{ incident.label }}">
                     <small>{{ incident.time }}</small>
                     <p>{{ incident.label }}</p>
+                    {% if incident.snapshot_url %}
+                      <img class="incident-thumb" src="{{ incident.snapshot_url }}" alt="Snapshot vi pham tai {{ incident.time }}">
+                    {% endif %}
                     <span class="chip risk-{{ incident.risk }}">Độ tin cậy {{ incident.confidence }}</span>
+                  </article>
+                {% else %}
+                  <article class="incident-card incident-card-empty">
+                    <small>00:00:00</small>
+                    <p>Chua co du lieu vi pham. Tai video de bat dau hau kiem.</p>
                   </article>
                 {% endfor %}
               </div>
@@ -569,5 +567,6 @@
 
 {% block scripts %}
   <script id="dashboard-data" type="application/json">{{ dashboard | tojson }}</script>
+  <script id="review-data" type="application/json">{{ latest_review | tojson }}</script>
   <script src="{{ url_for('static', path='/js/dashboard.js') }}"></script>
 {% endblock %}

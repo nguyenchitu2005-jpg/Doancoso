@@ -16,6 +16,8 @@ app = FastAPI(
 )
 
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+app.mount("/uploads", StaticFiles(directory=BASE_DIR.parent / "uploads"), name="uploads")
+app.mount("/results", StaticFiles(directory=BASE_DIR.parent / "results"), name="results")
 app.include_router(web_router)
 app.include_router(api_router, prefix="/api")
 

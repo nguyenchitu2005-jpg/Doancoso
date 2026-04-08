@@ -2,6 +2,8 @@ const tabs = document.querySelectorAll(".nav-item");
 const sections = document.querySelectorAll(".page-section");
 const pageTitle = document.getElementById("page-title");
 const dashboardPayload = JSON.parse(document.getElementById("dashboard-data").textContent);
+const reviewPayloadElement = document.getElementById("review-data");
+const reviewPayload = reviewPayloadElement ? JSON.parse(reviewPayloadElement.textContent) : { incidents: [] };
 const appShell = document.querySelector(".app-shell");
 
 const titleMap = {
@@ -92,6 +94,8 @@ intervalRange.addEventListener("input", () => {
 const uploadTriggers = document.querySelectorAll(".upload-trigger");
 const uploadFileInput = document.getElementById("review-video-file");
 const selectedFileName = document.getElementById("selected-file-name");
+const clearSelectedFileButton = document.getElementById("clear-selected-file");
+const uploadSubmitButton = document.getElementById("upload-submit-button");
 
 uploadTriggers.forEach((trigger) => {
   trigger.addEventListener("click", () => {
@@ -103,12 +107,101 @@ uploadTriggers.forEach((trigger) => {
   });
 });
 
+function syncSelectedFileState() {
+  if (!uploadFileInput || !selectedFileName) {
+    return;
+  }
+
+  const [file] = uploadFileInput.files;
+  const hasFile = Boolean(file);
+
+  selectedFileName.textContent = hasFile ? `Đã chọn: ${file.name}` : "Chưa chọn tệp nào";
+
+  if (clearSelectedFileButton) {
+    clearSelectedFileButton.hidden = !hasFile;
+  }
+
+  if (uploadSubmitButton) {
+    uploadSubmitButton.disabled = !hasFile;
+  }
+}
+
 if (uploadFileInput && selectedFileName) {
-  uploadFileInput.addEventListener("change", () => {
-    const [file] = uploadFileInput.files;
-    selectedFileName.textContent = file ? `Đã chọn: ${file.name}` : "Chưa chọn tệp nào";
+  uploadFileInput.addEventListener("change", syncSelectedFileState);
+}
+
+if (clearSelectedFileButton && uploadFileInput) {
+  clearSelectedFileButton.addEventListener("click", () => {
+    uploadFileInput.value = "";
+    syncSelectedFileState();
+    uploadFileInput.click();
   });
+}
+
+const reviewVideoPlayer = document.getElementById("review-video-player");
+const stageFlagText = document.getElementById("review-stage-flag-text");
+const incidentCards = Array.from(document.querySelectorAll(".incident-card[data-incident-time]"));
+const incidentCountChip = document.getElementById("incident-count-chip");
+
+function findActiveIncident(currentTime) {
+  if (!incidentCards.length) {
+    return null;
+  }
+  let activeCard = incidentCards[0];
+  incidentCards.forEach((card) => {
+    const marker = Number(card.dataset.incidentTime || 0);
+    if (marker <= currentTime) {
+      activeCard = card;
+    }
+  });
+  return activeCard;
+}
+
+function setActiveIncident(currentTime) {
+  const activeCard = findActiveIncident(currentTime);
+  incidentCards.forEach((card) => card.classList.toggle("is-active", card === activeCard));
+  if (stageFlagText && activeCard) {
+    stageFlagText.textContent = activeCard.dataset.incidentLabel || "Dang theo doi vi pham";
+  }
+}
+
+function bindIncidentCardNavigation() {
+  incidentCards.forEach((card) => {
+    card.addEventListener("click", () => {
+      if (!reviewVideoPlayer) {
+        return;
+      }
+      const marker = Number(card.dataset.incidentTime || 0);
+      reviewVideoPlayer.currentTime = marker;
+      reviewVideoPlayer.play();
+      setActiveIncident(marker);
+    });
+  });
+}
+
+function initializeReviewTimeline() {
+  if (incidentCountChip) {
+    incidentCountChip.textContent = `${reviewPayload.incidents?.length || 0} su co`;
+  }
+
+  if (!incidentCards.length) {
+    if (stageFlagText && reviewPayload.video_url) {
+      stageFlagText.textContent = "Dang phat lai video hau kiem";
+    }
+    return;
+  }
+
+  bindIncidentCardNavigation();
+  setActiveIncident(0);
+
+  if (reviewVideoPlayer) {
+    reviewVideoPlayer.addEventListener("timeupdate", () => {
+      setActiveIncident(reviewVideoPlayer.currentTime);
+    });
+  }
 }
 
 activateTab(appShell?.dataset.initialTab || "overview");
 renderStudents();
+initializeReviewTimeline();
+syncSelectedFileState();

@@ -812,9 +812,43 @@ h3 {
   gap: 16px;
 }
 
+.selected-file-block {
+  display: grid;
+  gap: 8px;
+}
+
+.selected-file-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .selected-file-name {
   color: var(--on-surface-variant);
   font-size: 0.92rem;
+}
+
+.file-clear-button {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  line-height: 1;
+  color: var(--on-surface-variant);
+  background: rgba(0, 23, 52, 0.08);
+}
+
+.file-clear-button:hover {
+  background: rgba(186, 26, 26, 0.18);
+  color: #a11b1b;
+}
+
+.primary-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .feedback-card {
@@ -857,36 +891,6 @@ h3 {
   font-weight: 700;
 }
 
-.progress-card {
-  display: grid;
-  gap: 10px;
-  padding: 16px;
-  border-radius: 18px;
-  background: var(--surface-container-low);
-}
-
-.progress-copy {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--secondary);
-  font-size: 0.92rem;
-}
-
-.progress-track {
-  height: 8px;
-  border-radius: 999px;
-  overflow: hidden;
-  background: rgba(0, 23, 52, 0.08);
-}
-
-.progress-track span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #2d74ff, #3a5f94);
-}
-
 .video-stage {
   position: relative;
   min-height: 380px;
@@ -895,6 +899,11 @@ h3 {
   overflow: hidden;
   background: linear-gradient(135deg, #16202c, #273742 52%, #e7ecd8);
   box-shadow: var(--shadow-ambient);
+}
+
+.video-stage.has-video {
+  padding: 0;
+  background: #0b111a;
 }
 
 .stage-flag {
@@ -911,6 +920,14 @@ h3 {
   background: rgba(96, 0, 7, 0.88);
   font-size: 0.8rem;
   font-weight: 700;
+}
+
+.review-video-player {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .signal-live {
@@ -1047,6 +1064,12 @@ h3 {
   background: rgba(255, 239, 184, 0.92);
 }
 
+.incident-list {
+  max-height: 760px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
 .incident-card {
   position: relative;
   display: grid;
@@ -1055,6 +1078,18 @@ h3 {
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.82);
   box-shadow: var(--shadow-ambient);
+  cursor: pointer;
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+.incident-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.12);
+}
+
+.incident-card.is-active {
+  background: rgba(231, 239, 255, 0.92);
+  box-shadow: 0 10px 24px rgba(45, 116, 255, 0.18);
 }
 
 .incident-card::before {
@@ -1070,6 +1105,22 @@ h3 {
 
 .incident-card p {
   font-weight: 800;
+}
+
+.incident-thumb {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid rgba(0, 23, 52, 0.1);
+  object-fit: cover;
+  aspect-ratio: 16 / 9;
+}
+
+.incident-card.incident-card-empty {
+  cursor: default;
+}
+
+.incident-card.incident-card-empty::before {
+  background: linear-gradient(180deg, rgba(95, 102, 114, 0.4), rgba(95, 102, 114, 0.1));
 }
 
 .filter-panel {

@@ -17,6 +17,42 @@ detection_service = DetectionService()
 VALID_TABS = {"overview", "review", "students", "settings"}
 
 
+def build_latest_review_payload(recent_uploads: list[dict]) -> dict:
+    latest_review = {
+        "status": "idle",
+        "analysis_mode": "n/a",
+        "video_name": None,
+        "video_url": None,
+        "summary": {"total_violations": 0, "reviewed_frames": 0},
+        "incidents": [],
+        "message": "Chua co du lieu hau kiem.",
+    }
+
+    latest_result = detection_service.get_latest_result()
+    if latest_result is not None:
+        latest_review["status"] = latest_result.get("status", "unknown")
+        latest_review["analysis_mode"] = latest_result.get("analysis_mode", "n/a")
+        latest_review["summary"] = latest_result.get("summary", latest_review["summary"])
+        latest_review["incidents"] = latest_result.get("incidents", [])
+        latest_review["message"] = latest_result.get("message", latest_review["message"])
+
+        video_path = latest_result.get("video_path")
+        if video_path:
+            video_file = Path(video_path)
+            latest_review["video_name"] = video_file.name
+            if video_file.exists():
+                latest_review["video_url"] = f"/uploads/{video_file.name}"
+        return latest_review
+
+    if recent_uploads:
+        latest_file = recent_uploads[0]["filename"]
+        latest_review["video_name"] = latest_file
+        latest_review["video_url"] = f"/uploads/{latest_file}"
+        latest_review["message"] = "Video da tai len, chua co ket qua phan tich."
+
+    return latest_review
+
+
 def build_dashboard_context(request: Request) -> dict:
     selected_tab = request.query_params.get("tab", "overview")
     if selected_tab not in VALID_TABS:
@@ -34,6 +70,9 @@ def build_dashboard_context(request: Request) -> dict:
     if detection_status and detection_message:
         detection_feedback = {"status": detection_status, "message": detection_message}
 
+    recent_uploads = video_service.list_uploads()
+    latest_review = build_latest_review_payload(recent_uploads)
+
     context = {
         "request": request,
         "app_title": "Vigilant Curator",
@@ -42,8 +81,9 @@ def build_dashboard_context(request: Request) -> dict:
         "selected_tab": selected_tab,
         "upload_feedback": upload_feedback,
         "detection_feedback": detection_feedback,
-        "recent_uploads": video_service.list_uploads(),
+        "recent_uploads": recent_uploads,
         "recent_results": detection_service.list_results(),
+        "latest_review": latest_review,
     }
     return context
 
