@@ -2,11 +2,13 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, File, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel
 from fastapi.templating import Jinja2Templates
 
 from app.services.dashboard_service import get_dashboard_payload
 from app.services.detection_service import DetectionService
+from app.services.settings_service import DEFAULT_AI_SETTINGS, get_ai_settings, settings_service
 from app.services.video_service import VideoService
 
 
@@ -15,6 +17,12 @@ templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / 
 video_service = VideoService()
 detection_service = DetectionService()
 VALID_TABS = {"overview", "review", "students", "settings"}
+
+
+class SettingsPayload(BaseModel):
+    confidence_threshold: float
+    extraction_interval_seconds: float
+    behavior_threshold: float
 
 
 def build_latest_review_payload(recent_uploads: list[dict]) -> dict:
@@ -72,6 +80,7 @@ def build_dashboard_context(request: Request) -> dict:
 
     recent_uploads = video_service.list_uploads()
     latest_review = build_latest_review_payload(recent_uploads)
+    ai_settings = get_ai_settings()
 
     context = {
         "request": request,
@@ -84,6 +93,7 @@ def build_dashboard_context(request: Request) -> dict:
         "recent_uploads": recent_uploads,
         "recent_results": detection_service.list_results(),
         "latest_review": latest_review,
+        "ai_settings": ai_settings,
     }
     return context
 
@@ -102,6 +112,7 @@ async def upload_review_video(video_file: UploadFile = File(...)) -> RedirectRes
         upload_message = f"Tải lên thành công: {upload_info['original_filename']} ({upload_info['size_label']})."
 
         try:
+            detection_service.apply_runtime_settings(get_ai_settings())
             detection_info = detection_service.detect_from_video(upload_info["path"])
             detection_status = "success" if detection_info["status"] == "completed" else "warning"
             detection_message = detection_info["message"]
@@ -128,3 +139,30 @@ async def upload_review_video(video_file: UploadFile = File(...)) -> RedirectRes
         )
 
     return RedirectResponse(url=f"/?{query}", status_code=303)
+
+
+@router.post("/settings", tags=["web"])
+async def save_settings(payload: SettingsPayload) -> JSONResponse:
+    saved_settings = settings_service.save(payload.model_dump())
+    detection_service.apply_runtime_settings(saved_settings)
+    return JSONResponse(
+        {
+            "status": "success",
+            "message": "Da luu cau hinh AI. Lan hau kiem tiep theo se dung gia tri moi.",
+            "settings": saved_settings,
+        }
+    )
+
+
+@router.post("/settings/reset", tags=["web"])
+async def reset_settings() -> JSONResponse:
+    saved_settings = settings_service.reset()
+    detection_service.apply_runtime_settings(saved_settings)
+    return JSONResponse(
+        {
+            "status": "success",
+            "message": "Da khoi phuc cau hinh mac dinh.",
+            "settings": saved_settings,
+            "defaults": DEFAULT_AI_SETTINGS,
+        }
+    )

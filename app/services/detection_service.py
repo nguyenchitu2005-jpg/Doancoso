@@ -15,6 +15,10 @@ try:
 except ImportError:  # pragma: no cover
     YOLO = None
 
+from app.services.behavior_model_service import BehaviorModelService
+from app.services.mediapipe_feature_service import MediapipeFeatureService
+from app.services.settings_service import get_ai_settings
+
 
 class DetectionService:
     """Run a YOLO-based review pass and save timeline snapshots."""
@@ -26,19 +30,43 @@ class DetectionService:
         model_name: str = "yolo11n.pt",
         conf_threshold: float = 0.35,
         sample_every_n_frames: int = 30,
+        sample_interval_seconds: float = 2.0,
         incident_cooldown_seconds: float = 3.0,
         max_incidents: int = 40,
+        behavior_model_path: str | Path = "models/suspicious_behavior_model.joblib",
+        behavior_score_threshold: float = 0.82,
+        enable_mediapipe: bool = True,
+        min_signal_streak: int = 2,
     ) -> None:
         self.weights_dir = Path(weights_dir)
         self.results_dir = Path(results_dir)
         self.model_name = model_name
         self.conf_threshold = conf_threshold
         self.sample_every_n_frames = max(1, sample_every_n_frames)
+        self.sample_interval_seconds = max(0.5, sample_interval_seconds)
         self.incident_cooldown_seconds = max(0.0, incident_cooldown_seconds)
         self.max_incidents = max(1, max_incidents)
+        self.min_signal_streak = max(1, min_signal_streak)
         self.results_dir.mkdir(parents=True, exist_ok=True)
         self.weights_dir.mkdir(parents=True, exist_ok=True)
         self._model = None
+        self.behavior_model_service = BehaviorModelService(
+            model_path=behavior_model_path,
+            score_threshold=behavior_score_threshold,
+        )
+        self.enable_mediapipe = enable_mediapipe
+        self.mediapipe_feature_service = MediapipeFeatureService() if enable_mediapipe else None
+        self.apply_runtime_settings(get_ai_settings())
+
+    def apply_runtime_settings(self, settings: dict[str, Any] | None) -> None:
+        if not settings:
+            return
+        if "confidence_threshold" in settings:
+            self.conf_threshold = max(0.4, min(float(settings["confidence_threshold"]), 0.95))
+        if "extraction_interval_seconds" in settings:
+            self.sample_interval_seconds = max(0.5, min(float(settings["extraction_interval_seconds"]), 5.0))
+        if "behavior_threshold" in settings:
+            self.behavior_model_service.score_threshold = max(0.6, min(float(settings["behavior_threshold"]), 0.98))
 
     def _resolve_model_source(self) -> str | Path:
         explicit_weight = self.weights_dir / self.model_name
@@ -62,6 +90,161 @@ class DetectionService:
         output_path = self.results_dir / f"{video_path.stem}.json"
         output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return output_path
+
+    def _analysis_mode(self) -> str:
+        modes = ["yolo"]
+        if self.enable_mediapipe and self.mediapipe_feature_service is not None and self.mediapipe_feature_service.is_available():
+            modes.append("mediapipe")
+        if self.behavior_model_service.is_available():
+            modes.append("behavior_model")
+        return "+".join(modes)
+
+    def _mediapipe_status(self) -> dict[str, Any]:
+        if not self.enable_mediapipe or self.mediapipe_feature_service is None:
+            return {"enabled": False, "message": "MediaPipe bi tat trong cau hinh."}
+        return self.mediapipe_feature_service.get_status()
+
+    def _advance_streak(self, streaks: dict[str, int], key: str, active: bool) -> int:
+        streaks[key] = streaks.get(key, 0) + 1 if active else 0
+        return streaks[key]
+
+    def _support_signal_count(
+        self,
+        mediapipe_signals: dict[str, Any],
+        phone_detections: list[dict[str, Any]],
+        person_detections: list[dict[str, Any]],
+    ) -> int:
+        count = 0
+        if phone_detections:
+            count += 1
+        if len(person_detections) > 1:
+            count += 1
+        if mediapipe_signals.get("hand_phone_alert"):
+            count += 1
+        if mediapipe_signals.get("face_missing"):
+            count += 1
+        return count
+
+    def _phone_signal_is_strong(self, phone_detections: list[dict[str, Any]], frame_shape: tuple[int, int]) -> bool:
+        if not phone_detections:
+            return False
+        frame_height, frame_width = frame_shape
+        frame_area = max(1.0, float(frame_height * frame_width))
+        best_area_ratio = 0.0
+        best_confidence = 0.0
+        for detection in phone_detections:
+            x1, y1, x2, y2 = detection["box"]
+            area = max(0.0, (x2 - x1) * (y2 - y1))
+            best_area_ratio = max(best_area_ratio, area / frame_area)
+            best_confidence = max(best_confidence, float(detection.get("confidence", 0.0)))
+        return best_confidence >= 0.35 and best_area_ratio >= 0.05
+
+    def _review_sample_interval_seconds(self) -> float:
+        # Offline review should not skip over short glances or brief phone appearances.
+        return min(self.sample_interval_seconds, 0.25)
+
+    def _inference_conf_threshold(self) -> float:
+        return min(self.conf_threshold, 0.25)
+
+    def _should_keep_detection(self, label: str, confidence: float) -> bool:
+        if label in {"cell phone", "mobile phone"}:
+            return confidence >= min(self.conf_threshold, 0.35)
+        return confidence >= self.conf_threshold
+
+    def _event_cooldown_seconds(self, event_type: str) -> float:
+        if event_type == "gaze":
+            return 1.0
+        if event_type == "head_pose":
+            return 1.25
+        if event_type in {"cell_phone", "hand_phone"}:
+            return 0.75
+        if event_type == "multiple_people":
+            return 2.0
+        if event_type == "face_missing":
+            return 4.0
+        if event_type == "behavior_model":
+            return 2.5
+        return self.incident_cooldown_seconds
+
+    def _event_required_streak(self, event_type: str) -> int:
+        if event_type in {"gaze", "head_pose", "cell_phone", "hand_phone"}:
+            return 1
+        if event_type == "face_missing":
+            return self.min_signal_streak + 1
+        return self.min_signal_streak
+
+    def _crossed_streak_threshold(self, previous_streak: int, current_streak: int, required_streak: int) -> bool:
+        return previous_streak < required_streak <= current_streak
+
+    def _head_pose_label(self, head_pose: str) -> str:
+        if head_pose == "left":
+            return "Quay dau sang trai"
+        if head_pose == "right":
+            return "Quay dau sang phai"
+        if head_pose == "up":
+            return "Ngang dau len tren"
+        if head_pose == "down":
+            return "Cui dau xuong duoi"
+        return "Tu the dau bat thuong"
+
+    def _head_pose_details(self, head_pose: str, strength: str) -> str:
+        pose_copy = {
+            "left": "sang trai",
+            "right": "sang phai",
+            "up": "len tren",
+            "down": "xuong duoi",
+        }.get(head_pose, "bat thuong")
+        strength_copy = {
+            "strong": "manh",
+            "moderate": "vua",
+            "none": "nhe",
+        }.get(strength, strength)
+        return f"Huong dau: {pose_copy}, muc do: {strength_copy}"
+
+    def _gaze_label(self, direction: str) -> str:
+        label_map = {
+            "left": "Liec mat sang trai",
+            "right": "Liec mat sang phai",
+            "top_left": "Liec mat sang trai",
+            "top_right": "Liec mat sang phai",
+            "bottom_left": "Liec mat sang trai",
+            "bottom_right": "Liec mat sang phai",
+        }
+        return label_map.get(direction, "Huong nhin lech khoi bai thi")
+
+    def _gaze_details(self, direction: str) -> str:
+        detail_map = {
+            "left": "Huong nhin sang trai",
+            "right": "Huong nhin sang phai",
+            "top_left": "Huong nhin len tren ben trai",
+            "top_right": "Huong nhin len tren ben phai",
+            "bottom_left": "Huong nhin xuong duoi ben trai",
+            "bottom_right": "Huong nhin xuong duoi ben phai",
+        }
+        return detail_map.get(direction, f"Huong nhin: {direction}")
+
+    def _should_emit_behavior_incident(
+        self,
+        behavior_prediction: dict[str, Any],
+        mediapipe_signals: dict[str, Any],
+        phone_detections: list[dict[str, Any]],
+        person_detections: list[dict[str, Any]],
+        streak: int,
+    ) -> bool:
+        score = float(behavior_prediction.get("score") or 0.0)
+        threshold = float(behavior_prediction.get("threshold") or self.behavior_model_service.score_threshold)
+        support_count = self._support_signal_count(
+            mediapipe_signals=mediapipe_signals,
+            phone_detections=phone_detections,
+            person_detections=person_detections,
+        )
+        has_hard_evidence = bool(phone_detections) or len(person_detections) > 1 or mediapipe_signals.get("hand_phone_alert")
+        face_missing = bool(mediapipe_signals.get("face_missing"))
+        if score >= max(0.96, threshold + 0.12):
+            return streak >= self.min_signal_streak and (has_hard_evidence or face_missing)
+        if score >= threshold and support_count >= 2 and has_hard_evidence:
+            return streak >= self.min_signal_streak + 1
+        return False
 
     def get_latest_result(self) -> dict[str, Any] | None:
         for file_path in self._iter_result_files():
@@ -152,6 +335,7 @@ class DetectionService:
         return f"/results/{snapshot_dir.name}/{snapshot_name}"
 
     def detect_from_video(self, video_path: str | Path) -> dict[str, Any]:
+        self.apply_runtime_settings(get_ai_settings())
         source_path = Path(video_path)
         if not source_path.exists():
             raise FileNotFoundError(f"Khong tim thay video: {source_path}")
@@ -163,6 +347,16 @@ class DetectionService:
                 "video_path": str(source_path),
                 "summary": {"total_violations": 0, "reviewed_frames": 0},
                 "incidents": [],
+                "engines": {
+                    "yolo": {
+                        "enabled": False,
+                        "confidence_threshold": self.conf_threshold,
+                        "configured_extraction_interval_seconds": self.sample_interval_seconds,
+                        "effective_extraction_interval_seconds": self._review_sample_interval_seconds(),
+                    },
+                    "mediapipe": self._mediapipe_status(),
+                    "behavior_model": self.behavior_model_service.get_status(),
+                },
                 "message": "Thieu OpenCV. Cai `pip install opencv-python-headless` de bat hau kiem YOLO.",
             }
             result["result_path"] = str(self._write_result(source_path, result))
@@ -177,6 +371,16 @@ class DetectionService:
                 "video_path": str(source_path),
                 "summary": {"total_violations": 0, "reviewed_frames": 0},
                 "incidents": [],
+                "engines": {
+                    "yolo": {
+                        "enabled": False,
+                        "confidence_threshold": self.conf_threshold,
+                        "configured_extraction_interval_seconds": self.sample_interval_seconds,
+                        "effective_extraction_interval_seconds": self._review_sample_interval_seconds(),
+                    },
+                    "mediapipe": self._mediapipe_status(),
+                    "behavior_model": self.behavior_model_service.get_status(),
+                },
                 "message": str(exc),
             }
             result["result_path"] = str(self._write_result(source_path, result))
@@ -190,12 +394,17 @@ class DetectionService:
         fps = fps if fps > 0 else 25.0
         frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         duration_seconds = round(frame_count / fps, 2) if frame_count > 0 else 0.0
+        effective_sample_interval_seconds = self._review_sample_interval_seconds()
+        sample_every_n_frames = max(1, int(round(fps * effective_sample_interval_seconds)))
         snapshot_dir = self._prepare_snapshot_dir(source_path)
 
         incidents: list[dict[str, Any]] = []
         reviewed_frames = 0
         frame_index = 0
         last_incident_time: dict[str, float] = {}
+        signal_streaks: dict[str, int] = {}
+        behavior_status = self.behavior_model_service.get_status()
+        mediapipe_status = self._mediapipe_status()
 
         try:
             while True:
@@ -203,13 +412,17 @@ class DetectionService:
                 if not success:
                     break
 
-                if frame_index % self.sample_every_n_frames != 0:
+                if frame_index % sample_every_n_frames != 0:
                     frame_index += 1
                     continue
 
                 reviewed_frames += 1
                 timestamp_seconds = frame_index / fps
-                prediction = model.predict(source=frame, conf=self.conf_threshold, verbose=False)[0]
+                prediction = model.predict(
+                    source=frame,
+                    conf=self._inference_conf_threshold(),
+                    verbose=False,
+                )[0]
 
                 names = prediction.names if prediction.names is not None else {}
                 boxes = prediction.boxes
@@ -220,10 +433,14 @@ class DetectionService:
                     confidences = boxes.conf.tolist()
                     coordinates = boxes.xyxy.tolist()
                     for class_id, confidence, coord in zip(class_ids, confidences, coordinates):
+                        label = self._label_for_class(names, int(class_id))
+                        confidence_value = float(confidence)
+                        if not self._should_keep_detection(label=label, confidence=confidence_value):
+                            continue
                         detections.append(
                             {
-                                "label": self._label_for_class(names, int(class_id)),
-                                "confidence": float(confidence),
+                                "label": label,
+                                "confidence": confidence_value,
                                 "box": [float(value) for value in coord],
                             }
                         )
@@ -232,11 +449,38 @@ class DetectionService:
                 phone_detections = [
                     item for item in detections if item["label"] in {"cell phone", "mobile phone"}
                 ]
+                mediapipe_payload = {
+                    "available": False,
+                    "features": {},
+                    "signals": {
+                        "face_count": 0,
+                        "head_pose_alert": False,
+                        "head_pose_strong": False,
+                        "head_pose_strength": "none",
+                        "gaze_alert": False,
+                        "hand_phone_alert": False,
+                        "face_missing": False,
+                    },
+                    "message": mediapipe_status.get("message", "MediaPipe unavailable."),
+                }
+                if mediapipe_status.get("enabled") and self.mediapipe_feature_service is not None:
+                    mediapipe_payload = self.mediapipe_feature_service.extract(frame_bgr=frame, yolo_detections=detections)
+                    mediapipe_status = self.mediapipe_feature_service.get_status()
 
+                previous_multiple_people_streak = signal_streaks.get("multiple_people", 0)
+                multiple_people_streak = self._advance_streak(
+                    signal_streaks,
+                    "multiple_people",
+                    len(person_detections) > 1,
+                )
                 if (
-                    len(person_detections) > 1
+                    self._crossed_streak_threshold(
+                        previous_multiple_people_streak,
+                        multiple_people_streak,
+                        self._event_required_streak("multiple_people"),
+                    )
                     and timestamp_seconds - last_incident_time.get("multiple_people", -999.0)
-                    >= self.incident_cooldown_seconds
+                    >= self._event_cooldown_seconds("multiple_people")
                 ):
                     snapshot_url = self._save_snapshot(
                         frame=frame,
@@ -259,10 +503,27 @@ class DetectionService:
                     )
                     last_incident_time["multiple_people"] = timestamp_seconds
 
+                previous_phone_streak = signal_streaks.get("cell_phone", 0)
+                phone_streak = self._advance_streak(
+                    signal_streaks,
+                    "cell_phone",
+                    bool(phone_detections),
+                )
+                strong_phone_signal = self._phone_signal_is_strong(
+                    phone_detections=phone_detections,
+                    frame_shape=frame.shape[:2],
+                )
                 if (
-                    phone_detections
+                    (
+                        self._crossed_streak_threshold(
+                            previous_phone_streak,
+                            phone_streak,
+                            self._event_required_streak("cell_phone"),
+                        )
+                        or strong_phone_signal
+                    )
                     and timestamp_seconds - last_incident_time.get("cell_phone", -999.0)
-                    >= self.incident_cooldown_seconds
+                    >= self._event_cooldown_seconds("cell_phone")
                 ):
                     snapshot_url = self._save_snapshot(
                         frame=frame,
@@ -285,6 +546,226 @@ class DetectionService:
                     )
                     last_incident_time["cell_phone"] = timestamp_seconds
 
+                mediapipe_features = mediapipe_payload.get("features", {})
+                mediapipe_signals = mediapipe_payload.get("signals", {})
+
+                previous_head_pose_streak = signal_streaks.get("head_pose", 0)
+                head_pose_streak = self._advance_streak(
+                    signal_streaks,
+                    "head_pose",
+                    bool(
+                        mediapipe_signals.get("head_pose_strong")
+                        and mediapipe_features.get("head_pose") in {"left", "right", "down"}
+                        and not phone_detections
+                        and len(person_detections) <= 1
+                    )
+                    or bool(
+                        mediapipe_signals.get("head_pose_alert")
+                        and mediapipe_features.get("head_pose") == "up"
+                        and not phone_detections
+                        and len(person_detections) <= 1
+                    ),
+                )
+                if (
+                    self._crossed_streak_threshold(
+                        previous_head_pose_streak,
+                        head_pose_streak,
+                        self._event_required_streak("head_pose"),
+                    )
+                    and timestamp_seconds - last_incident_time.get("head_pose", -999.0)
+                    >= self._event_cooldown_seconds("head_pose")
+                ):
+                    head_pose = mediapipe_features.get("head_pose") or "bat thuong"
+                    head_pose_strength = mediapipe_signals.get("head_pose_strength", "none")
+                    confidence = "92%" if mediapipe_signals.get("head_pose_strong") else "82%"
+                    head_pose_label = self._head_pose_label(head_pose)
+                    snapshot_targets = person_detections or detections[:1]
+                    snapshot_url = self._save_snapshot(
+                        frame=frame,
+                        detections=snapshot_targets,
+                        snapshot_dir=snapshot_dir,
+                        frame_index=frame_index,
+                        event_slug="head_pose",
+                        headline=f"Huong dau {head_pose}",
+                    )
+                    incidents.append(
+                        {
+                            "time": self._format_timestamp(timestamp_seconds),
+                            "time_seconds": round(timestamp_seconds, 2),
+                            "label": head_pose_label,
+                            "confidence": confidence,
+                            "risk": "medium",
+                            "event_type": "head_pose",
+                            "snapshot_url": snapshot_url,
+                            "details": self._head_pose_details(head_pose, head_pose_strength),
+                        }
+                    )
+                    last_incident_time["head_pose"] = timestamp_seconds
+
+                previous_gaze_streak = signal_streaks.get("gaze", 0)
+                gaze_streak = self._advance_streak(
+                    signal_streaks,
+                    "gaze",
+                    bool(
+                        mediapipe_signals.get("gaze_alert")
+                        and mediapipe_features.get("head_pose") == "forward"
+                        and not phone_detections
+                    ),
+                )
+                if (
+                    self._crossed_streak_threshold(
+                        previous_gaze_streak,
+                        gaze_streak,
+                        self._event_required_streak("gaze"),
+                    )
+                    and timestamp_seconds - last_incident_time.get("gaze", -999.0)
+                    >= self._event_cooldown_seconds("gaze")
+                ):
+                    direction = mediapipe_features.get("gaze_direction") or "unknown"
+                    gaze_label = self._gaze_label(direction)
+                    snapshot_targets = person_detections or detections[:1]
+                    snapshot_url = self._save_snapshot(
+                        frame=frame,
+                        detections=snapshot_targets,
+                        snapshot_dir=snapshot_dir,
+                        frame_index=frame_index,
+                        event_slug="gaze",
+                        headline=f"Huong nhin {direction}",
+                    )
+                    incidents.append(
+                        {
+                            "time": self._format_timestamp(timestamp_seconds),
+                            "time_seconds": round(timestamp_seconds, 2),
+                            "label": gaze_label,
+                            "confidence": "84%",
+                            "risk": "medium",
+                            "event_type": "gaze",
+                            "snapshot_url": snapshot_url,
+                            "details": self._gaze_details(direction),
+                        }
+                    )
+                    last_incident_time["gaze"] = timestamp_seconds
+
+                previous_hand_phone_streak = signal_streaks.get("hand_phone", 0)
+                hand_phone_streak = self._advance_streak(
+                    signal_streaks,
+                    "hand_phone",
+                    bool(mediapipe_signals.get("hand_phone_alert")),
+                )
+                if (
+                    self._crossed_streak_threshold(
+                        previous_hand_phone_streak,
+                        hand_phone_streak,
+                        self._event_required_streak("hand_phone"),
+                    )
+                    and timestamp_seconds - last_incident_time.get("hand_phone", -999.0)
+                    >= self._event_cooldown_seconds("hand_phone")
+                ):
+                    snapshot_targets = phone_detections or person_detections or detections[:1]
+                    snapshot_url = self._save_snapshot(
+                        frame=frame,
+                        detections=snapshot_targets,
+                        snapshot_dir=snapshot_dir,
+                        frame_index=frame_index,
+                        event_slug="hand_phone",
+                        headline="Tay gan dien thoai",
+                    )
+                    incidents.append(
+                        {
+                            "time": self._format_timestamp(timestamp_seconds),
+                            "time_seconds": round(timestamp_seconds, 2),
+                            "label": "Tay co tuong tac voi dien thoai",
+                            "confidence": "90%",
+                            "risk": "high",
+                            "event_type": "hand_phone",
+                            "snapshot_url": snapshot_url,
+                        }
+                    )
+                    last_incident_time["hand_phone"] = timestamp_seconds
+
+                previous_face_missing_streak = signal_streaks.get("face_missing", 0)
+                face_missing_streak = self._advance_streak(
+                    signal_streaks,
+                    "face_missing",
+                    bool(mediapipe_signals.get("face_missing")),
+                )
+                if (
+                    self._crossed_streak_threshold(
+                        previous_face_missing_streak,
+                        face_missing_streak,
+                        self._event_required_streak("face_missing"),
+                    )
+                    and timestamp_seconds - last_incident_time.get("face_missing", -999.0)
+                    >= self._event_cooldown_seconds("face_missing")
+                ):
+                    incidents.append(
+                        {
+                            "time": self._format_timestamp(timestamp_seconds),
+                            "time_seconds": round(timestamp_seconds, 2),
+                            "label": "Khong tim thay khuon mat",
+                            "confidence": "80%",
+                            "risk": "medium",
+                            "event_type": "face_missing",
+                            "snapshot_url": None,
+                        }
+                    )
+                    last_incident_time["face_missing"] = timestamp_seconds
+
+                if behavior_status.get("enabled"):
+                    behavior_features = self.behavior_model_service.build_feature_record(
+                        detections,
+                        vision_features=mediapipe_features,
+                    )
+                    behavior_prediction = self.behavior_model_service.predict(behavior_features)
+                    behavior_streak = self._advance_streak(
+                        signal_streaks,
+                        "behavior_model",
+                        bool(
+                            behavior_prediction.get("is_suspicious")
+                            and (
+                                phone_detections
+                                or len(person_detections) > 1
+                                or mediapipe_signals.get("hand_phone_alert")
+                                or mediapipe_signals.get("face_missing")
+                            )
+                        ),
+                    )
+                    if (
+                        self._should_emit_behavior_incident(
+                            behavior_prediction=behavior_prediction,
+                            mediapipe_signals=mediapipe_signals,
+                            phone_detections=phone_detections,
+                            person_detections=person_detections,
+                            streak=behavior_streak,
+                        )
+                        and timestamp_seconds - last_incident_time.get("behavior_model", -999.0)
+                        >= self._event_cooldown_seconds("behavior_model")
+                    ):
+                        reason_copy = ", ".join(behavior_prediction.get("reasons", []))
+                        headline = f"Nghi van hanh vi {behavior_prediction['score'] * 100:.0f}%"
+                        snapshot_targets = phone_detections or person_detections or detections[:1]
+                        snapshot_url = self._save_snapshot(
+                            frame=frame,
+                            detections=snapshot_targets,
+                            snapshot_dir=snapshot_dir,
+                            frame_index=frame_index,
+                            event_slug="behavior_model",
+                            headline=headline,
+                        )
+                        incidents.append(
+                            {
+                                "time": self._format_timestamp(timestamp_seconds),
+                                "time_seconds": round(timestamp_seconds, 2),
+                                "label": "Mo hinh hanh vi danh gia nghi van",
+                                "confidence": f"{behavior_prediction['score'] * 100:.0f}%",
+                                "risk": behavior_prediction["risk"],
+                                "event_type": "behavior_model",
+                                "snapshot_url": snapshot_url,
+                                "details": reason_copy or "Khung hinh co dac trung gan voi mau nghi van trong dataset.",
+                            }
+                        )
+                        last_incident_time["behavior_model"] = timestamp_seconds
+
                 if len(incidents) >= self.max_incidents:
                     break
 
@@ -298,14 +779,32 @@ class DetectionService:
             "video_frames": frame_count,
             "duration_seconds": duration_seconds,
             "fps": round(fps, 2),
+            "configured_extraction_interval_seconds": self.sample_interval_seconds,
+            "effective_extraction_interval_seconds": effective_sample_interval_seconds,
+            "behavior_model_enabled": bool(behavior_status.get("enabled")),
+            "mediapipe_enabled": bool(mediapipe_status.get("enabled")),
         }
         result = {
             "status": "completed",
-            "analysis_mode": "yolo",
+            "analysis_mode": self._analysis_mode(),
             "video_path": str(source_path),
             "summary": summary,
             "incidents": incidents,
-            "message": f"Phan tich xong {reviewed_frames} frame mau, ghi nhan {len(incidents)} su co.",
+            "engines": {
+                "yolo": {
+                    "enabled": True,
+                    "model": self.model_name,
+                    "confidence_threshold": self.conf_threshold,
+                    "configured_extraction_interval_seconds": self.sample_interval_seconds,
+                    "effective_extraction_interval_seconds": effective_sample_interval_seconds,
+                },
+                "mediapipe": mediapipe_status,
+                "behavior_model": behavior_status,
+            },
+            "message": (
+                f"Phan tich xong {reviewed_frames} frame mau, ghi nhan {len(incidents)} su co. "
+                f"Che do: {self._analysis_mode()}."
+            ),
         }
         result["result_path"] = str(self._write_result(source_path, result))
         return result

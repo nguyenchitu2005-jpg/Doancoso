@@ -498,19 +498,29 @@
               <div class="setting-block">
                 <div class="setting-copy">
                   <p>Confidence Threshold</p>
-                  <strong id="confidence-value">0.75</strong>
+                  <strong id="confidence-value">{{ "%.2f"|format(ai_settings["confidence_threshold"]) }}</strong>
                 </div>
-                <input id="confidence-range" type="range" min="0.4" max="0.95" step="0.01" value="0.75">
+                <input id="confidence-range" type="range" min="0.4" max="0.95" step="0.01" value="{{ ai_settings['confidence_threshold'] }}">
                 <div class="range-labels"><small>Nhạy bén</small><small>Chính xác</small></div>
               </div>
 
               <div class="setting-block">
                 <div class="setting-copy">
                   <p>Extraction Interval</p>
-                  <strong><span id="interval-value">2.0</span> giây</strong>
+                  <strong><span id="interval-value">{{ "%.1f"|format(ai_settings["extraction_interval_seconds"]) }}</span> giây</strong>
                 </div>
-                <input id="interval-range" type="range" min="0.5" max="5" step="0.5" value="2">
+                <input id="interval-range" type="range" min="0.5" max="5" step="0.5" value="{{ ai_settings['extraction_interval_seconds'] }}">
                 <div class="callout-box">Giá trị thấp tăng độ nhạy đối với hành vi ngắn, nhưng sẽ dùng nhiều GPU hơn.</div>
+              </div>
+
+              <div class="setting-block">
+                <div class="setting-copy">
+                  <p>Behavior Threshold</p>
+                  <strong id="behavior-threshold-value">{{ "%.2f"|format(ai_settings["behavior_threshold"]) }}</strong>
+                </div>
+                <input id="behavior-threshold-range" type="range" min="0.60" max="0.98" step="0.01" value="{{ ai_settings['behavior_threshold'] }}">
+                <div class="range-labels"><small>Nhạy hơn</small><small>Chặt hơn</small></div>
+                <div class="callout-box">Giảm ngưỡng để phát hiện nhiều hơn. Tăng ngưỡng để hạn chế cảnh báo nghi vấn nhầm.</div>
               </div>
             </article>
 
@@ -531,9 +541,10 @@
               </div>
 
               <div class="stack-buttons">
-                <button class="primary-button" type="button">Lưu cấu hình</button>
-                <button class="text-button" type="button">Khôi phục mặc định</button>
+                <button id="save-settings-button" class="primary-button" type="button">Lưu cấu hình</button>
+                <button id="reset-settings-button" class="text-button" type="button">Khôi phục mặc định</button>
               </div>
+              <p id="settings-feedback" class="panel-subtitle" hidden></p>
             </article>
 
             <article class="panel metrics-card">

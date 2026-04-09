@@ -9,3 +9,5 @@ results/*
 !results/.gitkeep
 weights/*
 !weights/.gitkeep
+models/*
+!models/.gitkeep

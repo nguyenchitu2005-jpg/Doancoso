@@ -82,14 +82,123 @@ const confidenceRange = document.getElementById("confidence-range");
 const confidenceValue = document.getElementById("confidence-value");
 const intervalRange = document.getElementById("interval-range");
 const intervalValue = document.getElementById("interval-value");
+const behaviorThresholdRange = document.getElementById("behavior-threshold-range");
+const behaviorThresholdValue = document.getElementById("behavior-threshold-value");
+const saveSettingsButton = document.getElementById("save-settings-button");
+const resetSettingsButton = document.getElementById("reset-settings-button");
+const settingsFeedback = document.getElementById("settings-feedback");
 
-confidenceRange.addEventListener("input", () => {
-  confidenceValue.textContent = Number(confidenceRange.value).toFixed(2);
-});
+if (confidenceRange && confidenceValue) {
+  confidenceRange.addEventListener("input", () => {
+    confidenceValue.textContent = Number(confidenceRange.value).toFixed(2);
+  });
+}
 
-intervalRange.addEventListener("input", () => {
-  intervalValue.textContent = Number(intervalRange.value).toFixed(1);
-});
+if (intervalRange && intervalValue) {
+  intervalRange.addEventListener("input", () => {
+    intervalValue.textContent = Number(intervalRange.value).toFixed(1);
+  });
+}
+
+if (behaviorThresholdRange && behaviorThresholdValue) {
+  behaviorThresholdRange.addEventListener("input", () => {
+    behaviorThresholdValue.textContent = Number(behaviorThresholdRange.value).toFixed(2);
+  });
+}
+
+function showSettingsFeedback(message, isError = false) {
+  if (!settingsFeedback) {
+    return;
+  }
+  settingsFeedback.hidden = false;
+  settingsFeedback.textContent = message;
+  settingsFeedback.style.color = isError ? "#b42318" : "#0f5132";
+}
+
+function collectAiSettings() {
+  return {
+    confidence_threshold: Number(confidenceRange?.value || 0.75),
+    extraction_interval_seconds: Number(intervalRange?.value || 2.0),
+    behavior_threshold: Number(behaviorThresholdRange?.value || 0.82),
+  };
+}
+
+function applyAiSettings(settings) {
+  if (confidenceRange && confidenceValue && typeof settings.confidence_threshold === "number") {
+    confidenceRange.value = settings.confidence_threshold.toFixed(2);
+    confidenceValue.textContent = settings.confidence_threshold.toFixed(2);
+  }
+  if (intervalRange && intervalValue && typeof settings.extraction_interval_seconds === "number") {
+    intervalRange.value = settings.extraction_interval_seconds.toFixed(1);
+    intervalValue.textContent = settings.extraction_interval_seconds.toFixed(1);
+  }
+  if (behaviorThresholdRange && behaviorThresholdValue && typeof settings.behavior_threshold === "number") {
+    behaviorThresholdRange.value = settings.behavior_threshold.toFixed(2);
+    behaviorThresholdValue.textContent = settings.behavior_threshold.toFixed(2);
+  }
+}
+
+async function saveAiSettings() {
+  if (!saveSettingsButton) {
+    return;
+  }
+
+  saveSettingsButton.disabled = true;
+  showSettingsFeedback("Dang luu cau hinh...");
+
+  try {
+    const response = await fetch("/settings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(collectAiSettings()),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.message || "Khong the luu cau hinh.");
+    }
+    applyAiSettings(payload.settings || {});
+    showSettingsFeedback(payload.message || "Da luu cau hinh.");
+  } catch (error) {
+    showSettingsFeedback(error.message || "Khong the luu cau hinh.", true);
+  } finally {
+    saveSettingsButton.disabled = false;
+  }
+}
+
+async function resetAiSettings() {
+  if (!resetSettingsButton) {
+    return;
+  }
+
+  resetSettingsButton.disabled = true;
+  showSettingsFeedback("Dang khoi phuc cau hinh mac dinh...");
+
+  try {
+    const response = await fetch("/settings/reset", {
+      method: "POST",
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.message || "Khong the khoi phuc cau hinh.");
+    }
+    applyAiSettings(payload.settings || payload.defaults || {});
+    showSettingsFeedback(payload.message || "Da khoi phuc cau hinh mac dinh.");
+  } catch (error) {
+    showSettingsFeedback(error.message || "Khong the khoi phuc cau hinh.", true);
+  } finally {
+    resetSettingsButton.disabled = false;
+  }
+}
+
+if (saveSettingsButton) {
+  saveSettingsButton.addEventListener("click", saveAiSettings);
+}
+
+if (resetSettingsButton) {
+  resetSettingsButton.addEventListener("click", resetAiSettings);
+}
 
 const uploadTriggers = document.querySelectorAll(".upload-trigger");
 const uploadFileInput = document.getElementById("review-video-file");
