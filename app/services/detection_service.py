@@ -148,6 +148,54 @@ class DetectionService:
         enriched.update(self._identity_payload(identity))
         return enriched
 
+    def _incident_risk_rank(self, risk: str | None) -> int:
+        return {"high": 3, "medium": 2, "low": 1}.get(str(risk or "low"), 1)
+
+    def _incident_confidence_value(self, confidence: Any) -> float:
+        if confidence is None:
+            return 0.0
+        raw = str(confidence).strip()
+        digits = "".join(ch for ch in raw if ch.isdigit() or ch == ".")
+        if not digits:
+            return 0.0
+        try:
+            value = float(digits)
+        except ValueError:
+            return 0.0
+        if "%" in raw:
+            return value
+        return value * 100.0 if value <= 1.0 else value
+
+    def _incident_event_rank(self, event_type: str | None) -> int:
+        return {
+            "cell_phone": 6,
+            "hand_phone": 5,
+            "multiple_people": 4,
+            "behavior_model": 3,
+            "head_pose": 2,
+            "gaze": 1,
+            "face_missing": 0,
+        }.get(str(event_type or ""), 0)
+
+    def _incident_score(self, incident: dict[str, Any]) -> tuple[int, float, int]:
+        return (
+            self._incident_risk_rank(str(incident.get("risk") or "low")),
+            self._incident_confidence_value(incident.get("confidence")),
+            self._incident_event_rank(str(incident.get("event_type") or "")),
+        )
+
+    def _deduplicate_incidents_per_second(self, incidents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        best_by_second: dict[int, dict[str, Any]] = {}
+        for incident in incidents:
+            second_key = int(float(incident.get("time_seconds") or 0.0))
+            existing = best_by_second.get(second_key)
+            if existing is None or self._incident_score(incident) > self._incident_score(existing):
+                best_by_second[second_key] = incident
+
+        selected = list(best_by_second.values())
+        selected.sort(key=lambda item: float(item.get("time_seconds") or 0.0))
+        return selected
+
     def _risk_level_for_student(self, alerts: int, behavior_risks: list[str]) -> str:
         if "high" in behavior_risks or alerts >= 4:
             return "high"
@@ -1020,6 +1068,8 @@ class DetectionService:
             for incident in incidents:
                 if str(incident.get("candidate_id") or "UNKNOWN") == "UNKNOWN":
                     incident.update(self._identity_payload(dominant_identity))
+
+        incidents = self._deduplicate_incidents_per_second(incidents)
 
         students_report = self._build_students_report(
             incidents=incidents,

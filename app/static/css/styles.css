@@ -44,7 +44,8 @@ body {
 }
 
 button,
-input {
+input,
+a {
   font: inherit;
 }
 
@@ -530,6 +531,7 @@ h3 {
 }
 
 .primary-button {
+  text-decoration: none;
   color: white;
   background: linear-gradient(135deg, var(--primary), var(--primary-container));
 }
@@ -1225,6 +1227,13 @@ h3 {
 .risk-badge.risk-low {
   color: var(--success);
   background: var(--success-soft);
+}
+
+.empty-state {
+  padding: 14px 0;
+  text-align: center;
+  color: var(--on-surface-variant);
+  font-weight: 600;
 }
 
 .table-footer {

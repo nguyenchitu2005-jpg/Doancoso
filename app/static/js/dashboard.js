@@ -36,19 +36,139 @@ const studentTableBody = document.getElementById("student-table-body");
 const studentTableSummary = document.getElementById("student-table-summary");
 const riskChips = document.querySelectorAll(".filter-chip");
 const exportStudentsCsvButton = document.getElementById("export-students-csv");
+const globalSearchInput = document.getElementById("global-search-input");
+const globalSearchSuggestions = document.getElementById("global-search-suggestions");
+const allStudents = Array.isArray(dashboardPayload.students) ? dashboardPayload.students : [];
+let activeRiskFilter = "all";
+let activeSearchQuery = "";
+
+function normalizeText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function tokenize(value) {
+  return normalizeText(value).split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+function buildStudentTerms(student) {
+  const terms = [
+    student?.name,
+    student?.candidate_id,
+    student?.room,
+    student?.email,
+  ];
+  return terms.map((value) => String(value || "").trim()).filter(Boolean);
+}
+
+function buildStudentTokens(student) {
+  const behaviorText = Array.isArray(student?.behaviors) ? student.behaviors.join(" ") : "";
+  const combined = [
+    student?.name,
+    student?.candidate_id,
+    student?.room,
+    student?.email,
+    behaviorText,
+  ].join(" ");
+  return tokenize(combined);
+}
+
+const studentSearchIndex = allStudents.map((student) => ({
+  student,
+  terms: buildStudentTerms(student),
+  tokens: buildStudentTokens(student),
+}));
+
+function searchMatchesEntry(entry, query) {
+  const queryTokens = tokenize(query);
+  if (!queryTokens.length) {
+    return true;
+  }
+  return queryTokens.every((queryToken) => entry.tokens.some((token) => token.startsWith(queryToken) || token.includes(queryToken)));
+}
+
+function termMatchesQuery(term, query) {
+  const queryTokens = tokenize(query);
+  if (!queryTokens.length) {
+    return false;
+  }
+  const termTokens = tokenize(term);
+  return queryTokens.every((queryToken) => termTokens.some((token) => token.startsWith(queryToken)));
+}
+
+function updateSearchSuggestions(query) {
+  if (!globalSearchSuggestions) {
+    return;
+  }
+
+  globalSearchSuggestions.innerHTML = "";
+  if (!query.trim()) {
+    return;
+  }
+
+  const seen = new Set();
+  const suggestions = [];
+
+  studentSearchIndex.forEach((entry) => {
+    entry.terms.forEach((term) => {
+      const key = normalizeText(term);
+      if (!key || seen.has(key)) {
+        return;
+      }
+      if (!termMatchesQuery(term, query)) {
+        return;
+      }
+      seen.add(key);
+      suggestions.push(term);
+    });
+  });
+
+  suggestions.slice(0, 10).forEach((term) => {
+    const option = document.createElement("option");
+    option.value = term;
+    globalSearchSuggestions.appendChild(option);
+  });
+}
+
+function getFilteredStudents() {
+  return studentSearchIndex
+    .filter((entry) => (activeRiskFilter === "all" || entry.student.risk === activeRiskFilter) && searchMatchesEntry(entry, activeSearchQuery))
+    .map((entry) => entry.student);
+}
 
 function behaviorChips(behaviors) {
+  if (!Array.isArray(behaviors) || !behaviors.length) {
+    return '<span class="table-chip">Không có</span>';
+  }
   return behaviors.map((behavior) => `<span class="table-chip">${behavior}</span>`).join("");
 }
 
-function renderStudents(filter = "all") {
-  const rows = dashboardPayload.students.filter((student) => filter === "all" || student.risk === filter);
+function renderStudents() {
+  if (!studentTableBody || !studentTableSummary) {
+    return;
+  }
+
+  const rows = getFilteredStudents();
+  if (!rows.length) {
+    studentTableBody.innerHTML = `
+      <tr>
+        <td colspan="6">
+          <div class="empty-state">Không có kết quả phù hợp với bộ lọc hiện tại.</div>
+        </td>
+      </tr>
+    `;
+    studentTableSummary.textContent = `Hiển thị 0 mục trong số ${allStudents.length} hồ sơ tiêu biểu`;
+    return;
+  }
 
   studentTableBody.innerHTML = rows.map((student) => `
     <tr>
       <td>
         <div class="candidate-cell">
-          <span class="table-avatar">${student.name.split(" ").slice(-1)[0].slice(0, 2).toUpperCase()}</span>
+          <span class="table-avatar">${String(student.name || "NA").trim().split(/\s+/).slice(-1)[0].slice(0, 2).toUpperCase()}</span>
           <div>
             <strong>${student.name}</strong>
             <small>${student.email}</small>
@@ -68,7 +188,7 @@ function renderStudents(filter = "all") {
     </tr>
   `).join("");
 
-  studentTableSummary.textContent = `Hiển thị ${rows.length} mục trong số ${dashboardPayload.students.length} hồ sơ tiêu biểu`;
+  studentTableSummary.textContent = `Hiển thị ${rows.length} mục trong số ${allStudents.length} hồ sơ tiêu biểu`;
 }
 
 function toCsvCell(value) {
@@ -122,9 +242,41 @@ riskChips.forEach((chip) => {
   chip.addEventListener("click", () => {
     riskChips.forEach((item) => item.classList.remove("is-selected"));
     chip.classList.add("is-selected");
-    renderStudents(chip.dataset.risk);
+    activeRiskFilter = chip.dataset.risk || "all";
+    renderStudents();
   });
 });
+
+if (globalSearchInput) {
+  const applyGlobalSearch = (openStudentsTab = false) => {
+    activeSearchQuery = globalSearchInput.value || "";
+    updateSearchSuggestions(activeSearchQuery);
+    if (openStudentsTab) {
+      activateTab("students");
+    }
+    renderStudents();
+  };
+
+  globalSearchInput.addEventListener("input", () => {
+    applyGlobalSearch(false);
+  });
+
+  globalSearchInput.addEventListener("change", () => {
+    applyGlobalSearch(false);
+  });
+
+  globalSearchInput.addEventListener("search", () => {
+    applyGlobalSearch(false);
+  });
+
+  globalSearchInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    applyGlobalSearch(true);
+  });
+}
 
 if (exportStudentsCsvButton) {
   exportStudentsCsvButton.addEventListener("click", downloadStudentsCsv);

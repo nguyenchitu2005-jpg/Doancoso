@@ -1,8 +1,11 @@
+import csv
+from datetime import datetime
+from io import StringIO
 from pathlib import Path
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, File, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from fastapi.templating import Jinja2Templates
 
@@ -65,6 +68,57 @@ def _review_device_status(latest_review: dict) -> str:
     return "Cho xac minh"
 
 
+def _format_mmss(seconds: float) -> str:
+    total_seconds = max(0, int(seconds))
+    minutes = total_seconds // 60
+    remain_seconds = total_seconds % 60
+    return f"{minutes:02d}:{remain_seconds:02d}"
+
+
+def build_violation_trend(latest_review: dict, bucket_count: int = 6) -> list[dict[str, int | str | bool]]:
+    incidents = latest_review.get("incidents", []) if isinstance(latest_review, dict) else []
+    summary = latest_review.get("summary", {}) if isinstance(latest_review, dict) else {}
+    duration_seconds = float(summary.get("duration_seconds") or 0.0)
+
+    if duration_seconds <= 0 and incidents:
+        duration_seconds = max(float(item.get("time_seconds") or 0.0) for item in incidents)
+
+    counts = [0 for _ in range(bucket_count)]
+    if duration_seconds > 0:
+        for incident in incidents:
+            timestamp_seconds = float(incident.get("time_seconds") or 0.0)
+            ratio = min(1.0, max(0.0, timestamp_seconds / duration_seconds))
+            bucket_index = min(bucket_count - 1, int(ratio * bucket_count))
+            counts[bucket_index] += 1
+
+    if duration_seconds > 0 and bucket_count > 1:
+        step = duration_seconds / (bucket_count - 1)
+        labels = [_format_mmss(step * index) for index in range(bucket_count - 1)] + ["Hiện tại"]
+    else:
+        labels = ["08:00", "12:00", "14:00", "16:00", "20:00", "Hiện tại"][:bucket_count]
+
+    max_count = max(counts) if counts else 0
+    peak_index = counts.index(max_count) if max_count > 0 else -1
+
+    trend_points: list[dict[str, int | str | bool]] = []
+    for index, count in enumerate(counts):
+        if max_count <= 0:
+            height = 0
+        elif count <= 0:
+            height = 0
+        else:
+            height = max(8, int(round((count / max_count) * 100)))
+        trend_points.append(
+            {
+                "label": labels[index],
+                "count": count,
+                "height": height,
+                "highlight": max_count > 0 and index == peak_index,
+            }
+        )
+    return trend_points
+
+
 def build_performance_metrics(latest_review: dict) -> dict:
     summary = latest_review.get("summary", {}) if isinstance(latest_review, dict) else {}
     latency_ms = summary.get("avg_frame_processing_ms")
@@ -99,6 +153,46 @@ def build_performance_metrics(latest_review: dict) -> dict:
     }
 
 
+def build_system_status(latest_review: dict, performance_metrics: dict[str, str]) -> dict[str, str]:
+    summary = latest_review.get("summary", {}) if isinstance(latest_review, dict) else {}
+    engines = latest_review.get("engines", {}) if isinstance(latest_review, dict) else {}
+    face_engine = engines.get("face_recognition", {}) if isinstance(engines, dict) else {}
+
+    effective_fps = summary.get("effective_processing_fps")
+    if isinstance(effective_fps, (int, float)):
+        frame_fps_label = f"{effective_fps:.1f} FPS"
+    else:
+        frame_fps_label = "--"
+
+    face_engine_label = "Bật" if face_engine.get("enabled") else "Tắt"
+    status_value = str(latest_review.get("status") or "idle")
+    state_label_map = {
+        "completed": "System Online",
+        "idle": "Chưa có dữ liệu",
+        "skipped": "Thiếu dependency",
+        "error": "Có lỗi xử lý",
+    }
+    state_label = state_label_map.get(status_value, "System Online")
+
+    created_at = latest_review.get("created_at")
+    updated_label = "Chưa có mốc xử lý."
+    if created_at:
+        try:
+            normalized = str(created_at).replace("Z", "+00:00")
+            updated_at = datetime.fromisoformat(normalized)
+            updated_label = f"Cập nhật: {updated_at.strftime('%d/%m/%Y %H:%M:%S')}"
+        except ValueError:
+            updated_label = f"Cập nhật: {created_at}"
+
+    return {
+        "latency_label": performance_metrics.get("latency_label", "--"),
+        "frame_fps_label": frame_fps_label,
+        "face_engine_label": face_engine_label,
+        "state_label": state_label,
+        "updated_label": updated_label,
+    }
+
+
 def build_latest_review_payload(recent_uploads: list[dict]) -> dict:
     latest_review = {
         "status": "idle",
@@ -111,6 +205,7 @@ def build_latest_review_payload(recent_uploads: list[dict]) -> dict:
         "primary_candidate": None,
         "engines": {},
         "message": "Chua co du lieu hau kiem.",
+        "created_at": None,
     }
 
     latest_result = sql_storage_service.get_latest_review_result() or detection_service.get_latest_result()
@@ -131,6 +226,7 @@ def build_latest_review_payload(recent_uploads: list[dict]) -> dict:
         if latest_review["primary_candidate"] is None:
             latest_review["primary_candidate"] = _pick_primary_candidate_from_students(latest_review["students_report"])
         latest_review["message"] = latest_result.get("message", latest_review["message"])
+        latest_review["created_at"] = latest_result.get("created_at")
 
         video_path = latest_result.get("video_path")
         if video_path:
@@ -178,6 +274,9 @@ def build_dashboard_context(request: Request) -> dict:
         high_risk = len([item for item in students_report if item.get("risk") == "high"])
         dashboard_payload["overview"]["active_sessions"] = len(students_report)
         dashboard_payload["overview"]["integrity_score"] = f"{max(0.0, 100.0 - (high_risk * 8.0)):.1f}%"
+    student_items = dashboard_payload.get("students", [])
+    students_total = len(student_items)
+    students_high_risk = len([item for item in student_items if str(item.get("risk") or "") == "high"])
 
     review_candidate = latest_review.get("primary_candidate") or _pick_primary_candidate_from_students(students_report) or {
         "candidate_id": "UNKNOWN",
@@ -201,6 +300,9 @@ def build_dashboard_context(request: Request) -> dict:
         if review_incident_count > 0
         else "Chua ghi nhan su co trong lan hau kiem gan nhat."
     )
+    performance_metrics = build_performance_metrics(latest_review)
+    violation_trend = build_violation_trend(latest_review)
+    system_status = build_system_status(latest_review, performance_metrics)
 
     context = {
         "request": request,
@@ -215,10 +317,33 @@ def build_dashboard_context(request: Request) -> dict:
         "latest_review": latest_review,
         "review_candidate": review_candidate,
         "review_risk_message": review_risk_message,
-        "performance_metrics": build_performance_metrics(latest_review),
+        "students_total": students_total,
+        "students_high_risk": students_high_risk,
+        "violation_trend": violation_trend,
+        "system_status": system_status,
+        "performance_metrics": performance_metrics,
         "ai_settings": ai_settings,
     }
     return context
+
+
+def _build_students_csv(students: list[dict]) -> str:
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["name", "email", "candidate_id", "room", "behaviors", "alerts", "risk"])
+    for student in students:
+        writer.writerow(
+            [
+                str(student.get("name") or ""),
+                str(student.get("email") or ""),
+                str(student.get("candidate_id") or ""),
+                str(student.get("room") or ""),
+                "; ".join([str(item) for item in (student.get("behaviors") or [])]),
+                int(student.get("alerts") or 0),
+                str(student.get("risk") or "low"),
+            ]
+        )
+    return f"\ufeff{buffer.getvalue()}"
 
 
 @router.get("/", response_class=HTMLResponse, tags=["web"])
@@ -227,13 +352,26 @@ async def dashboard_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("dashboard.html", context)
 
 
+@router.get("/students/export.csv", name="export_students_csv", tags=["web"])
+async def export_students_csv(request: Request) -> Response:
+    context = build_dashboard_context(request)
+    students = context.get("dashboard", {}).get("students", [])
+    csv_content = _build_students_csv(students if isinstance(students, list) else [])
+    filename = f"students_report_{datetime.now().strftime('%Y-%m-%d')}.csv"
+    return Response(
+        content=csv_content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.post("/review/upload", name="upload_review_video", tags=["web"])
 async def upload_review_video(video_file: UploadFile = File(...)) -> RedirectResponse:
     try:
         upload_info = await video_service.save_upload(video_file)
         sql_storage_service.save_upload(upload_info)
         upload_status = "success"
-        upload_message = f"Tải lên thành công: {upload_info['original_filename']} ({upload_info['size_label']})."
+        upload_message = f"Tai len thanh cong: {upload_info['original_filename']} ({upload_info['size_label']})."
 
         try:
             detection_service.apply_runtime_settings(get_ai_settings())

@@ -62,7 +62,14 @@
         <div class="topbar-tools">
           <label class="search-field">
             <span class="material-symbols-outlined">search</span>
-            <input type="search" placeholder="Tìm kiếm phòng thi, thí sinh hoặc sự cố...">
+            <input
+              id="global-search-input"
+              type="search"
+              list="global-search-suggestions"
+              autocomplete="off"
+              placeholder="Tìm kiếm phòng thi, mã sinh viên, tên thí sinh..."
+            >
+            <datalist id="global-search-suggestions"></datalist>
           </label>
           <button class="icon-button" type="button" aria-label="Thông báo">
             <span class="material-symbols-outlined">notifications</span>
@@ -359,10 +366,6 @@
                   <p class="micro-label">Danh gia rui ro</p>
                   <strong>{{ review_candidate.risk_label }}</strong>
                   <p>{{ review_risk_message }}</p>
-                  <div class="risk-actions">
-                    <button class="primary-button" type="button">Xac nhan vi pham</button>
-                    <button class="secondary-button" type="button">Bo qua</button>
-                  </div>
                 </article>
               </div>
             </div>
@@ -401,8 +404,8 @@
               <p class="section-description">Bảng này hiển thị trực tiếp dữ liệu hậu kiểm mới nhất từ hệ thống nhận diện và phát hiện hành vi.</p>
             </div>
             <div class="student-kpis">
-              <article class="kpi-card"><p class="micro-label">Tổng thí sinh</p><p class="kpi-value">1,284</p></article>
-              <article class="kpi-card"><p class="micro-label">Rủi ro cao</p><p class="kpi-value">42</p></article>
+              <article class="kpi-card"><p class="micro-label">Tổng thí sinh</p><p class="kpi-value">{{ "{:,}".format(students_total) }}</p></article>
+              <article class="kpi-card"><p class="micro-label">Rủi ro cao</p><p class="kpi-value">{{ "{:,}".format(students_high_risk) }}</p></article>
             </div>
           </div>
 
@@ -578,5 +581,5 @@
 {% block scripts %}
   <script id="dashboard-data" type="application/json">{{ dashboard | tojson }}</script>
   <script id="review-data" type="application/json">{{ latest_review | tojson }}</script>
-  <script src="{{ url_for('static', path='/js/dashboard.js') }}"></script>
+  <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260410"></script>
 {% endblock %}
