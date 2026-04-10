@@ -35,6 +35,7 @@ const riskLabels = {
 const studentTableBody = document.getElementById("student-table-body");
 const studentTableSummary = document.getElementById("student-table-summary");
 const riskChips = document.querySelectorAll(".filter-chip");
+const exportStudentsCsvButton = document.getElementById("export-students-csv");
 
 function behaviorChips(behaviors) {
   return behaviors.map((behavior) => `<span class="table-chip">${behavior}</span>`).join("");
@@ -70,6 +71,53 @@ function renderStudents(filter = "all") {
   studentTableSummary.textContent = `Hiển thị ${rows.length} mục trong số ${dashboardPayload.students.length} hồ sơ tiêu biểu`;
 }
 
+function toCsvCell(value) {
+  const raw = value == null ? "" : String(value);
+  return `"${raw.replace(/"/g, "\"\"")}"`;
+}
+
+function buildStudentsCsvRows(students) {
+  const header = ["name", "email", "candidate_id", "room", "behaviors", "alerts", "risk"];
+  const lines = [header.map((item) => toCsvCell(item)).join(",")];
+
+  students.forEach((student) => {
+    const row = [
+      student.name,
+      student.email,
+      student.candidate_id,
+      student.room,
+      Array.isArray(student.behaviors) ? student.behaviors.join("; ") : "",
+      student.alerts,
+      student.risk,
+    ];
+    lines.push(row.map((item) => toCsvCell(item)).join(","));
+  });
+
+  return lines.join("\n");
+}
+
+function downloadStudentsCsv() {
+  const students = Array.isArray(dashboardPayload.students) ? dashboardPayload.students : [];
+  if (!students.length) {
+    alert("Chua co du lieu thi sinh de xuat bao cao.");
+    return;
+  }
+
+  const csvText = `\uFEFF${buildStudentsCsvRows(students)}`;
+  const blob = new Blob([csvText], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const now = new Date();
+  const filename = `students_report_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}.csv`;
+
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 riskChips.forEach((chip) => {
   chip.addEventListener("click", () => {
     riskChips.forEach((item) => item.classList.remove("is-selected"));
@@ -77,6 +125,10 @@ riskChips.forEach((chip) => {
     renderStudents(chip.dataset.risk);
   });
 });
+
+if (exportStudentsCsvButton) {
+  exportStudentsCsvButton.addEventListener("click", downloadStudentsCsv);
+}
 
 const confidenceRange = document.getElementById("confidence-range");
 const confidenceValue = document.getElementById("confidence-value");
@@ -251,12 +303,14 @@ const reviewVideoPlayer = document.getElementById("review-video-player");
 const stageFlagText = document.getElementById("review-stage-flag-text");
 const incidentCards = Array.from(document.querySelectorAll(".incident-card[data-incident-time]"));
 const incidentCountChip = document.getElementById("incident-count-chip");
+const defaultStageFlagText = "Dang phat lai video hau kiem";
+const emptyStageFlagText = "Chua co video de hau kiem";
 
 function findActiveIncident(currentTime) {
   if (!incidentCards.length) {
     return null;
   }
-  let activeCard = incidentCards[0];
+  let activeCard = null;
   incidentCards.forEach((card) => {
     const marker = Number(card.dataset.incidentTime || 0);
     if (marker <= currentTime) {
@@ -269,9 +323,14 @@ function findActiveIncident(currentTime) {
 function setActiveIncident(currentTime) {
   const activeCard = findActiveIncident(currentTime);
   incidentCards.forEach((card) => card.classList.toggle("is-active", card === activeCard));
-  if (stageFlagText && activeCard) {
-    stageFlagText.textContent = activeCard.dataset.incidentLabel || "Dang theo doi vi pham";
+  if (!stageFlagText) {
+    return;
   }
+  if (activeCard) {
+    stageFlagText.textContent = activeCard.dataset.incidentLabel || "Dang theo doi vi pham";
+    return;
+  }
+  stageFlagText.textContent = reviewPayload.video_url ? defaultStageFlagText : emptyStageFlagText;
 }
 
 function bindIncidentCardNavigation() {
@@ -294,8 +353,8 @@ function initializeReviewTimeline() {
   }
 
   if (!incidentCards.length) {
-    if (stageFlagText && reviewPayload.video_url) {
-      stageFlagText.textContent = "Dang phat lai video hau kiem";
+    if (stageFlagText) {
+      stageFlagText.textContent = reviewPayload.video_url ? defaultStageFlagText : emptyStageFlagText;
     }
     return;
   }

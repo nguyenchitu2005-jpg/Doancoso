@@ -52,6 +52,14 @@ class MediapipeFeatureService:
         self._hands = None
         self._load_attempted = False
         self._load_error: str | None = None
+        self._gaze_baseline_max_samples = 60
+        self._gaze_baseline_min_samples = 10
+        self.reset_session_state()
+
+    def reset_session_state(self) -> None:
+        self._gaze_baseline_horizontal = 0.0
+        self._gaze_baseline_vertical = 0.0
+        self._gaze_baseline_samples = 0
 
     def _ensure_models(self) -> bool:
         if self._load_attempted:
@@ -105,6 +113,7 @@ class MediapipeFeatureService:
         self._face_mesh = None
         self._hands = None
         self._load_attempted = False
+        self.reset_session_state()
 
     def _empty_features(self) -> dict[str, Any]:
         return {
@@ -312,6 +321,8 @@ class MediapipeFeatureService:
         landmarks: list[Any],
         width: int,
         height: int,
+        head_pose: str | None,
+        head_yaw: float | None,
     ) -> dict[str, Any]:
         if len(landmarks) < 478:
             return {
@@ -342,20 +353,43 @@ class MediapipeFeatureService:
             center_indices=self.EYE_CENTER_LANDMARKS["right"],
         )
 
-        horizontal_delta = ((left_eye["x_ratio"] - 0.5) + (right_eye["x_ratio"] - 0.5)) / 2.0
-        vertical_delta = ((left_eye["y_ratio"] - 0.5) + (right_eye["y_ratio"] - 0.5)) / 2.0
+        horizontal_delta_raw = ((left_eye["x_ratio"] - 0.5) + (right_eye["x_ratio"] - 0.5)) / 2.0
+        vertical_delta_raw = ((left_eye["y_ratio"] - 0.5) + (right_eye["y_ratio"] - 0.5)) / 2.0
 
-        threshold = 0.12
+        calibrating_baseline = self._gaze_baseline_samples < self._gaze_baseline_min_samples
+        if head_pose == "forward" and head_yaw is not None and abs(head_yaw) <= 14.0 and calibrating_baseline:
+            baseline_tolerance = 0.12
+            if (
+                self._gaze_baseline_samples == 0
+                or (
+                    abs(horizontal_delta_raw - self._gaze_baseline_horizontal) <= baseline_tolerance
+                    and abs(vertical_delta_raw - self._gaze_baseline_vertical) <= baseline_tolerance
+                )
+            ):
+                samples = self._gaze_baseline_samples
+                self._gaze_baseline_horizontal = (
+                    (self._gaze_baseline_horizontal * samples + horizontal_delta_raw) / (samples + 1)
+                )
+                self._gaze_baseline_vertical = (
+                    (self._gaze_baseline_vertical * samples + vertical_delta_raw) / (samples + 1)
+                )
+                self._gaze_baseline_samples += 1
+
+        horizontal_delta = horizontal_delta_raw - self._gaze_baseline_horizontal
+        vertical_delta = vertical_delta_raw - self._gaze_baseline_vertical
+
+        horizontal_threshold = 0.145
+        vertical_threshold = 0.16
         horizontal = "center"
         vertical = "center"
-        if horizontal_delta <= -threshold:
+        if horizontal_delta <= -horizontal_threshold:
             horizontal = "right"
-        elif horizontal_delta >= threshold:
+        elif horizontal_delta >= horizontal_threshold:
             horizontal = "left"
 
-        if vertical_delta <= -threshold:
+        if vertical_delta <= -vertical_threshold:
             vertical = "top"
-        elif vertical_delta >= threshold:
+        elif vertical_delta >= vertical_threshold:
             vertical = "bottom"
 
         if horizontal != "center" and vertical != "center":
@@ -378,6 +412,8 @@ class MediapipeFeatureService:
         return {
             "gaze_on_script": 1 if direction == "center" and center_box else 0,
             "gaze_direction": direction,
+            "gaze_horizontal_delta": horizontal_delta,
+            "gaze_vertical_delta": vertical_delta,
             "gazePoint_x": int(round(gaze_point[0])),
             "gazePoint_y": int(round(gaze_point[1])),
             "pupil_left_x": int(round(left_eye["iris_center"][0])),
@@ -441,6 +477,8 @@ class MediapipeFeatureService:
                 "face_count": 0,
                 "head_pose_alert": False,
                 "gaze_alert": False,
+                "gaze_baseline_ready": False,
+                "gaze_baseline_samples": 0,
                 "hand_phone_alert": False,
                 "face_missing": True,
             },
@@ -505,7 +543,15 @@ class MediapipeFeatureService:
             features["head_pitch"] = head_pitch
             features["head_yaw"] = head_yaw
             features["head_roll"] = head_roll
-            features.update(self._estimate_gaze(primary_landmarks, width, height))
+            features.update(
+                self._estimate_gaze(
+                    primary_landmarks,
+                    width,
+                    height,
+                    head_pose=head_pose,
+                    head_yaw=head_yaw,
+                )
+            )
 
         features.update(
             self._extract_hand_features(
@@ -529,6 +575,8 @@ class MediapipeFeatureService:
             "head_pose_strong": head_pose_strength == "strong",
             "head_pose_strength": head_pose_strength,
             "gaze_alert": features.get("gaze_on_script") == 0 and features.get("gaze_direction") not in {None, "center"},
+            "gaze_baseline_ready": self._gaze_baseline_samples >= self._gaze_baseline_min_samples,
+            "gaze_baseline_samples": int(self._gaze_baseline_samples),
             "hand_phone_alert": features.get("hand_obj_interaction") == 1 and features.get("phone_present") == 1,
             "face_missing": features.get("face_present") == 0,
         }
