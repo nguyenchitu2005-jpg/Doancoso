@@ -6,6 +6,15 @@
         "email": "nguyenchitu@gmail.com",
         "room": "Room A",
         "image": "2380602423_NguyenChiTu.jpg"
+    },
+
+    {
+    "candidate_id": "2380602584",
+    "name": "Nguyen Duong Truong Vu",
+    "email": "truongvu05th01@gmail.com",
+    "room": "Room A",
+    "image": "2380602584_NguyenDuongTruongVu.jpg"
+   
     }
 ]
 

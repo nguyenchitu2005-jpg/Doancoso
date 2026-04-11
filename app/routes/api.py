@@ -20,3 +20,13 @@ async def storage_status() -> dict:
 @router.get("/storage/recent-reviews")
 async def storage_recent_reviews(limit: int = 10) -> dict:
     return {"items": sql_storage_service.list_recent_reviews(limit=limit)}
+
+
+@router.get("/storage/candidates")
+async def storage_candidate_histories(limit: int = 250) -> dict:
+    return {"items": sql_storage_service.list_candidate_histories(limit=limit)}
+
+
+@router.get("/storage/candidate-incidents")
+async def storage_candidate_incidents(candidate_id: str, limit: int = 100) -> dict:
+    return {"items": sql_storage_service.list_candidate_incidents(candidate_id=candidate_id, limit=limit)}

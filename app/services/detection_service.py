@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from collections import Counter
@@ -97,6 +98,25 @@ class DetectionService:
 
     def _iter_result_files(self) -> list[Path]:
         return sorted(self.results_dir.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+
+    def _compute_file_sha256(self, file_path: str | Path | None) -> str:
+        if not file_path:
+            return ""
+        target_path = Path(file_path)
+        if not target_path.exists() or not target_path.is_file():
+            return ""
+
+        digest = hashlib.sha256()
+        try:
+            with target_path.open("rb") as source_file:
+                while True:
+                    chunk = source_file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+        except OSError:
+            return ""
+        return digest.hexdigest()
 
     def _write_result(self, video_path: Path, payload: dict[str, Any]) -> Path:
         output_path = self.results_dir / f"{video_path.stem}.json"
@@ -413,6 +433,26 @@ class DetectionService:
         }
         return detail_map.get(direction, f"Huong nhin: {direction}")
 
+    def _gaze_confidence(self, mediapipe_features: dict[str, Any], mediapipe_signals: dict[str, Any], streak: int) -> str:
+        horizontal_delta = abs(float(mediapipe_features.get("gaze_horizontal_delta") or 0.0))
+        vertical_delta = abs(float(mediapipe_features.get("gaze_vertical_delta") or 0.0))
+        max_delta = max(horizontal_delta, vertical_delta)
+        required_streak = max(1, self._event_required_streak("gaze"))
+        streak_progress = min(1.0, float(streak) / float(required_streak + 1))
+        baseline_ready = bool(mediapipe_signals.get("gaze_baseline_ready"))
+
+        # Treat gaze confidence as a heuristic score derived from deviation magnitude
+        # plus signal stability, not as a calibrated model probability.
+        score = 0.68
+        score += min(1.0, max_delta / 0.30) * 0.16
+        score += min(1.0, (horizontal_delta + vertical_delta) / 0.42) * 0.06
+        score += streak_progress * 0.05
+        if baseline_ready:
+            score += 0.05
+
+        score = max(0.72, min(score, 0.95))
+        return f"{score * 100:.0f}%"
+
     def _is_gaze_signal_active(
         self,
         timestamp_seconds: float,
@@ -485,6 +525,81 @@ class DetectionService:
                 }
             )
         return results
+
+    def list_historical_students(self, limit_files: int | None = None) -> list[dict[str, Any]]:
+        def risk_rank(risk: str | None) -> int:
+            return {"high": 3, "medium": 2, "low": 1}.get(str(risk or "low"), 1)
+
+        files = self._iter_result_files()
+        if isinstance(limit_files, int) and limit_files > 0:
+            files = files[:limit_files]
+
+        student_map: dict[str, dict[str, Any]] = {}
+        seen_video_hashes: set[str] = set()
+        for file_path in reversed(files):
+            try:
+                payload = json.loads(file_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+
+            video_hash = str(payload.get("video_hash") or "").strip().lower()
+            if not video_hash:
+                video_hash = self._compute_file_sha256(payload.get("video_path"))
+            if video_hash:
+                if video_hash in seen_video_hashes:
+                    continue
+                seen_video_hashes.add(video_hash)
+
+            students = payload.get("students_report") or payload.get("summary", {}).get("students_report") or []
+            if not isinstance(students, list):
+                continue
+
+            for item in students:
+                if not isinstance(item, dict):
+                    continue
+                candidate_id = str(item.get("candidate_id") or "").strip()
+                if not candidate_id or candidate_id == "UNKNOWN":
+                    continue
+
+                row = student_map.get(candidate_id)
+                if row is None:
+                    row = {
+                        "candidate_id": candidate_id,
+                        "name": str(item.get("name") or candidate_id),
+                        "email": str(item.get("email") or ""),
+                        "room": str(item.get("room") or ""),
+                        "alerts": 0,
+                        "risk": str(item.get("risk") or "low"),
+                        "behaviors": [],
+                        "review_count": 0,
+                    }
+                    student_map[candidate_id] = row
+
+                if not row.get("name"):
+                    row["name"] = str(item.get("name") or candidate_id)
+                if not row.get("email"):
+                    row["email"] = str(item.get("email") or "")
+                if not row.get("room"):
+                    row["room"] = str(item.get("room") or "")
+
+                row["alerts"] += int(item.get("alerts") or 0)
+                row["review_count"] += 1
+                if risk_rank(item.get("risk")) > risk_rank(row.get("risk")):
+                    row["risk"] = str(item.get("risk") or "low")
+
+                for behavior in item.get("behaviors") or []:
+                    behavior_label = str(behavior or "").strip()
+                    if behavior_label and behavior_label not in row["behaviors"]:
+                        row["behaviors"].append(behavior_label)
+
+        return sorted(
+            student_map.values(),
+            key=lambda item: (
+                -risk_rank(str(item.get("risk") or "low")),
+                -int(item.get("alerts") or 0),
+                str(item.get("candidate_id") or ""),
+            ),
+        )
 
     def _label_for_class(self, names: dict[int, str] | list[str], class_id: int) -> str:
         if isinstance(names, dict):
@@ -898,7 +1013,11 @@ class DetectionService:
                                 "time": self._format_timestamp(timestamp_seconds),
                                 "time_seconds": round(timestamp_seconds, 2),
                                 "label": gaze_label,
-                                "confidence": "84%",
+                                "confidence": self._gaze_confidence(
+                                    mediapipe_features=mediapipe_features,
+                                    mediapipe_signals=mediapipe_signals,
+                                    streak=gaze_streak,
+                                ),
                                 "risk": "medium",
                                 "event_type": "gaze",
                                 "snapshot_url": snapshot_url,

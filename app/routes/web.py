@@ -1,5 +1,6 @@
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from html import escape
 from io import StringIO
 from pathlib import Path
 from urllib.parse import urlencode
@@ -21,6 +22,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / 
 video_service = VideoService()
 detection_service = DetectionService()
 VALID_TABS = {"overview", "review", "students", "settings"}
+VIETNAM_TZ = timezone(timedelta(hours=7))
 
 
 class SettingsPayload(BaseModel):
@@ -58,6 +60,24 @@ def _pick_primary_candidate_from_students(students: list[dict]) -> dict | None:
 
 def _risk_label_vi(risk: str) -> str:
     return {"high": "CAO", "medium": "TRUNG BINH", "low": "THAP"}.get(str(risk or "low"), "THAP")
+
+
+def _risk_badge_vi(risk: str) -> str:
+    return {"high": "Rat cao", "medium": "Trung binh", "low": "Thap"}.get(str(risk or "low"), "Thap")
+
+
+def _format_csv_datetime(raw_value: str | None) -> str:
+    raw_text = str(raw_value or "").strip()
+    if not raw_text:
+        return ""
+    try:
+        normalized = raw_text.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(VIETNAM_TZ).strftime("%d/%m/%Y %H:%M:%S")
+    except ValueError:
+        return raw_text
 
 
 def _review_device_status(latest_review: dict) -> str:
@@ -266,19 +286,22 @@ def build_dashboard_context(request: Request) -> dict:
     latest_review = build_latest_review_payload(recent_uploads)
     ai_settings = get_ai_settings()
     db_recent_results = sql_storage_service.list_recent_reviews(limit=5)
+    historical_students = sql_storage_service.list_candidate_histories(limit=250)
+    if not historical_students:
+        historical_students = detection_service.list_historical_students()
 
     dashboard_payload = get_dashboard_payload()
-    students_report = latest_review.get("students_report", [])
-    if students_report:
-        dashboard_payload["students"] = students_report
-        high_risk = len([item for item in students_report if item.get("risk") == "high"])
-        dashboard_payload["overview"]["active_sessions"] = len(students_report)
+    latest_students_report = latest_review.get("students_report", [])
+    if latest_students_report:
+        high_risk = len([item for item in latest_students_report if item.get("risk") == "high"])
+        dashboard_payload["overview"]["active_sessions"] = len(latest_students_report)
         dashboard_payload["overview"]["integrity_score"] = f"{max(0.0, 100.0 - (high_risk * 8.0)):.1f}%"
+    dashboard_payload["students"] = historical_students or latest_students_report
     student_items = dashboard_payload.get("students", [])
     students_total = len(student_items)
     students_high_risk = len([item for item in student_items if str(item.get("risk") or "") == "high"])
 
-    review_candidate = latest_review.get("primary_candidate") or _pick_primary_candidate_from_students(students_report) or {
+    review_candidate = latest_review.get("primary_candidate") or _pick_primary_candidate_from_students(latest_students_report) or {
         "candidate_id": "UNKNOWN",
         "name": "Unknown Candidate",
         "email": "",
@@ -329,21 +352,138 @@ def build_dashboard_context(request: Request) -> dict:
 
 def _build_students_csv(students: list[dict]) -> str:
     buffer = StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(["name", "email", "candidate_id", "room", "behaviors", "alerts", "risk"])
-    for student in students:
+    writer = csv.writer(buffer, delimiter=";", lineterminator="\r\n")
+    writer.writerow(
+        [
+            "STT",
+            "Thi sinh",
+            "Email",
+            "Ma thi sinh",
+            "Phong thi",
+            "So canh bao",
+            "Muc do rui ro",
+            "So lan hau kiem",
+            "Hanh vi ghi nhan",
+            "Ghi nhan dau tien",
+            "Ghi nhan gan nhat",
+        ]
+    )
+    for index, student in enumerate(students, start=1):
         writer.writerow(
             [
+                index,
                 str(student.get("name") or ""),
                 str(student.get("email") or ""),
                 str(student.get("candidate_id") or ""),
                 str(student.get("room") or ""),
-                "; ".join([str(item) for item in (student.get("behaviors") or [])]),
                 int(student.get("alerts") or 0),
-                str(student.get("risk") or "low"),
+                _risk_badge_vi(str(student.get("risk") or "low")),
+                int(student.get("review_count") or 0),
+                " | ".join([str(item).strip() for item in (student.get("behaviors") or []) if str(item).strip()]),
+                _format_csv_datetime(student.get("first_seen_at")),
+                _format_csv_datetime(student.get("last_seen_at")),
             ]
         )
-    return f"\ufeff{buffer.getvalue()}"
+    return f"\ufeffsep=;\r\n{buffer.getvalue()}"
+
+
+def _build_students_excel_html(students: list[dict]) -> str:
+    generated_at = datetime.now(VIETNAM_TZ).strftime("%d/%m/%Y %H:%M:%S")
+    rows_html: list[str] = []
+    for index, student in enumerate(students, start=1):
+        behaviors = "<br>".join(
+            [
+                escape(str(item).strip())
+                for item in (student.get("behaviors") or [])
+                if str(item).strip()
+            ]
+        )
+        rows_html.append(
+            "".join(
+                [
+                    "<tr>",
+                    f"<td>{index}</td>",
+                    f"<td>{escape(str(student.get('name') or ''))}</td>",
+                    f"<td>{escape(str(student.get('email') or ''))}</td>",
+                    f"<td>{escape(str(student.get('candidate_id') or ''))}</td>",
+                    f"<td>{escape(str(student.get('room') or ''))}</td>",
+                    f"<td>{int(student.get('alerts') or 0)}</td>",
+                    f"<td>{escape(_risk_badge_vi(str(student.get('risk') or 'low')))}</td>",
+                    f"<td>{int(student.get('review_count') or 0)}</td>",
+                    f"<td>{behaviors}</td>",
+                    f"<td>{escape(_format_csv_datetime(student.get('first_seen_at')))}</td>",
+                    f"<td>{escape(_format_csv_datetime(student.get('last_seen_at')))}</td>",
+                    "</tr>",
+                ]
+            )
+        )
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {{
+      font-family: Arial, sans-serif;
+      font-size: 12pt;
+      color: #0f172a;
+    }}
+    .report-title {{
+      font-size: 18pt;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }}
+    .report-meta {{
+      color: #475569;
+      margin-bottom: 16px;
+    }}
+    table {{
+      border-collapse: collapse;
+      width: 100%;
+    }}
+    th, td {{
+      border: 1px solid #cbd5e1;
+      padding: 8px 10px;
+      vertical-align: top;
+    }}
+    th {{
+      background: #dbeafe;
+      font-weight: 700;
+      text-align: center;
+    }}
+    td {{
+      background: #ffffff;
+    }}
+    .number {{
+      text-align: center;
+    }}
+  </style>
+</head>
+<body>
+  <div class="report-title">Bao cao thi sinh va vi pham hau kiem</div>
+  <div class="report-meta">Ngay xuat: {escape(generated_at)}</div>
+  <table>
+    <thead>
+      <tr>
+        <th>STT</th>
+        <th>Thi sinh</th>
+        <th>Email</th>
+        <th>Ma thi sinh</th>
+        <th>Phong thi</th>
+        <th>So canh bao</th>
+        <th>Muc do rui ro</th>
+        <th>So lan hau kiem</th>
+        <th>Hanh vi ghi nhan</th>
+        <th>Ghi nhan dau tien</th>
+        <th>Ghi nhan gan nhat</th>
+      </tr>
+    </thead>
+    <tbody>
+      {''.join(rows_html)}
+    </tbody>
+  </table>
+</body>
+</html>"""
 
 
 @router.get("/", response_class=HTMLResponse, tags=["web"])
@@ -361,6 +501,19 @@ async def export_students_csv(request: Request) -> Response:
     return Response(
         content=csv_content,
         media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/students/export.xls", name="export_students_excel", tags=["web"])
+async def export_students_excel(request: Request) -> Response:
+    context = build_dashboard_context(request)
+    students = context.get("dashboard", {}).get("students", [])
+    excel_html = _build_students_excel_html(students if isinstance(students, list) else [])
+    filename = f"students_report_{datetime.now().strftime('%Y-%m-%d')}.xls"
+    return Response(
+        content=excel_html,
+        media_type="application/vnd.ms-excel; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

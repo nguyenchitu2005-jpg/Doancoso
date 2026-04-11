@@ -191,51 +191,13 @@ function renderStudents() {
   studentTableSummary.textContent = `Hiển thị ${rows.length} mục trong số ${allStudents.length} hồ sơ tiêu biểu`;
 }
 
-function toCsvCell(value) {
-  const raw = value == null ? "" : String(value);
-  return `"${raw.replace(/"/g, "\"\"")}"`;
-}
-
-function buildStudentsCsvRows(students) {
-  const header = ["name", "email", "candidate_id", "room", "behaviors", "alerts", "risk"];
-  const lines = [header.map((item) => toCsvCell(item)).join(",")];
-
-  students.forEach((student) => {
-    const row = [
-      student.name,
-      student.email,
-      student.candidate_id,
-      student.room,
-      Array.isArray(student.behaviors) ? student.behaviors.join("; ") : "",
-      student.alerts,
-      student.risk,
-    ];
-    lines.push(row.map((item) => toCsvCell(item)).join(","));
-  });
-
-  return lines.join("\n");
-}
-
-function downloadStudentsCsv() {
+function downloadStudentsReport() {
   const students = Array.isArray(dashboardPayload.students) ? dashboardPayload.students : [];
   if (!students.length) {
     alert("Chua co du lieu thi sinh de xuat bao cao.");
     return;
   }
-
-  const csvText = `\uFEFF${buildStudentsCsvRows(students)}`;
-  const blob = new Blob([csvText], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const now = new Date();
-  const filename = `students_report_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}.csv`;
-
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
+  window.location.href = "/students/export.xls";
 }
 
 riskChips.forEach((chip) => {
@@ -279,7 +241,7 @@ if (globalSearchInput) {
 }
 
 if (exportStudentsCsvButton) {
-  exportStudentsCsvButton.addEventListener("click", downloadStudentsCsv);
+  exportStudentsCsvButton.addEventListener("click", downloadStudentsReport);
 }
 
 const confidenceRange = document.getElementById("confidence-range");

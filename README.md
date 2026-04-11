@@ -144,6 +144,8 @@ Windows Authentication example:
 $env:SQLSERVER_URL = "mssql+pyodbc://@localhost/DoAnCoSo?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes&TrustServerCertificate=yes"
 ```
 
+You can also create a local `.env` file at the project root by copying `.env.example` and filling in `SQLSERVER_URL`. The app now auto-loads `.env` on startup.
+
 ### 3) Start app
 
 ```powershell

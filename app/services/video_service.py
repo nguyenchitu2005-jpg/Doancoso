@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 from uuid import uuid4
 
@@ -42,12 +43,14 @@ class VideoService:
         destination = self.build_upload_path(stored_name)
 
         total_size = 0
+        file_hash = hashlib.sha256()
         with destination.open("wb") as output_file:
             while True:
                 chunk = await upload.read(1024 * 1024)
                 if not chunk:
                     break
                 total_size += len(chunk)
+                file_hash.update(chunk)
                 output_file.write(chunk)
         await upload.close()
 
@@ -55,6 +58,7 @@ class VideoService:
             "original_filename": original_name,
             "stored_filename": stored_name,
             "path": str(destination),
+            "content_hash": file_hash.hexdigest(),
             "size_bytes": total_size,
             "size_label": self._format_size(total_size),
         }

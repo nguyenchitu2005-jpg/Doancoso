@@ -54,7 +54,10 @@ async def reset_runtime_data() -> None:
     else:
         UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    sql_storage_service.initialize()
+    if sql_storage_service.initialize():
+        sql_storage_service.backfill_reviews_from_results_dir(RESULTS_DIR)
+        sql_storage_service.backfill_video_hashes()
+        sql_storage_service.rebuild_candidate_histories()
 
 
 @app.get("/health", tags=["system"])

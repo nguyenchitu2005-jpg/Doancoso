@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator
 
-from sqlalchemy import create_engine
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import Base
+
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+load_dotenv(BASE_DIR / ".env")
 
 
 class DatabaseSessionManager:
@@ -36,6 +42,7 @@ class DatabaseSessionManager:
         try:
             self.engine = create_engine(self.database_url, pool_pre_ping=True, future=True)
             Base.metadata.create_all(self.engine)
+            self._ensure_schema_updates()
             self._session_factory = sessionmaker(bind=self.engine, autoflush=False, autocommit=False, future=True)
             self._init_error = None
             return True
@@ -44,6 +51,60 @@ class DatabaseSessionManager:
             self._session_factory = None
             self._init_error = str(exc)
             return False
+
+    def _ensure_schema_updates(self) -> None:
+        if self.engine is None:
+            return
+
+        inspector = inspect(self.engine)
+        self._ensure_nullable_column(
+            inspector=inspector,
+            table_name="uploaded_videos",
+            column_name="content_hash",
+            ddl="ALTER TABLE uploaded_videos ADD content_hash VARCHAR(128) NULL",
+        )
+        self._ensure_index(
+            inspector=inspector,
+            table_name="uploaded_videos",
+            index_name="ix_uploaded_videos_content_hash",
+            ddl="CREATE INDEX ix_uploaded_videos_content_hash ON uploaded_videos (content_hash)",
+        )
+        self._ensure_nullable_column(
+            inspector=inspector,
+            table_name="review_results",
+            column_name="video_hash",
+            ddl="ALTER TABLE review_results ADD video_hash VARCHAR(128) NULL",
+        )
+        self._ensure_index(
+            inspector=inspector,
+            table_name="review_results",
+            index_name="ix_review_results_video_hash",
+            ddl="CREATE INDEX ix_review_results_video_hash ON review_results (video_hash)",
+        )
+
+    def _ensure_nullable_column(self, inspector, table_name: str, column_name: str, ddl: str) -> None:
+        if self.engine is None:
+            return
+        try:
+            column_names = {column["name"] for column in inspector.get_columns(table_name)}
+        except SQLAlchemyError:
+            return
+        if column_name in column_names:
+            return
+        with self.engine.begin() as connection:
+            connection.execute(text(ddl))
+
+    def _ensure_index(self, inspector, table_name: str, index_name: str, ddl: str) -> None:
+        if self.engine is None:
+            return
+        try:
+            index_names = {index["name"] for index in inspector.get_indexes(table_name)}
+        except SQLAlchemyError:
+            return
+        if index_name in index_names:
+            return
+        with self.engine.begin() as connection:
+            connection.execute(text(ddl))
 
     @property
     def init_error(self) -> str | None:
