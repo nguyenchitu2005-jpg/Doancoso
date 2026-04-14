@@ -15,6 +15,16 @@ except ImportError:  # pragma: no cover
     np = None
 
 try:
+    import onnxruntime as ort
+except ImportError:  # pragma: no cover
+    ort = None
+
+try:
+    import torch
+except ImportError:  # pragma: no cover
+    torch = None
+
+try:
     from insightface.app import FaceAnalysis
 except ImportError:  # pragma: no cover
     FaceAnalysis = None
@@ -28,21 +38,72 @@ class FaceRecognitionService:
         gallery_dir: str | Path = "data/face_gallery",
         registry_path: str | Path = "data/candidate_registry.json",
         similarity_threshold: float = 0.35,
-        det_size: tuple[int, int] = (640, 640),
+        det_size: tuple[int, int] = (384, 384),
+        max_faces_per_frame: int = 1,
     ) -> None:
         self.gallery_dir = Path(gallery_dir)
         self.registry_path = Path(registry_path)
         self.similarity_threshold = max(-1.0, min(1.0, similarity_threshold))
         self.det_size = det_size
+        self.max_faces_per_frame = max(1, max_faces_per_frame)
 
         self._app = None
         self._load_error: str | None = None
         self._profiles_by_id: dict[str, dict[str, Any]] = {}
         self._gallery_embeddings: dict[str, Any] = {}
+        self._available_providers: list[str] = []
+        self._active_providers: list[str] = []
+        self._execution_backend = "cpu"
+        self._execution_context_id = -1
+        self._runtime_message: str | None = None
 
         self.gallery_dir.mkdir(parents=True, exist_ok=True)
         self.registry_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+
+    def _resolve_runtime(self) -> tuple[list[str], int, str, str | None]:
+        available_providers = list(ort.get_available_providers()) if ort is not None else []
+        self._available_providers = available_providers
+
+        torch_cuda_available = bool(torch is not None and torch.cuda.is_available())
+        if "CUDAExecutionProvider" in available_providers:
+            return (
+                ["CUDAExecutionProvider", "CPUExecutionProvider"],
+                0,
+                "cuda",
+                None,
+            )
+
+        if torch_cuda_available:
+            return (
+                ["CPUExecutionProvider"],
+                -1,
+                "cpu",
+                "GPU co san nhung onnxruntime chua co CUDAExecutionProvider; hay cai onnxruntime-gpu.",
+            )
+
+        return (["CPUExecutionProvider"], -1, "cpu", None)
+
+    def _collect_active_providers(self) -> list[str]:
+        if self._app is None:
+            return []
+
+        providers: list[str] = []
+        seen: set[str] = set()
+        models = getattr(self._app, "models", {}) or {}
+        for model in models.values():
+            session = getattr(model, "session", None)
+            if session is None or not hasattr(session, "get_providers"):
+                continue
+            try:
+                session_providers = session.get_providers()
+            except Exception:
+                continue
+            for provider in session_providers:
+                if provider not in seen:
+                    seen.add(provider)
+                    providers.append(provider)
+        return providers
 
     def _initialize(self) -> None:
         if FaceAnalysis is None or cv2 is None or np is None:
@@ -50,8 +111,13 @@ class FaceRecognitionService:
             return
 
         try:
-            self._app = FaceAnalysis(name="buffalo_l")
-            self._app.prepare(ctx_id=0, det_size=self.det_size)
+            providers, ctx_id, backend, runtime_message = self._resolve_runtime()
+            self._app = FaceAnalysis(name="buffalo_l", providers=providers)
+            self._app.prepare(ctx_id=ctx_id, det_size=self.det_size)
+            self._execution_backend = backend
+            self._execution_context_id = ctx_id
+            self._runtime_message = runtime_message
+            self._active_providers = self._collect_active_providers() or list(providers)
         except Exception as exc:  # pragma: no cover
             self._app = None
             self._load_error = f"Khong the khoi tao InsightFace: {exc}"
@@ -181,7 +247,13 @@ class FaceRecognitionService:
             "registry_path": str(self.registry_path),
             "candidate_count": len(self._gallery_embeddings),
             "similarity_threshold": self.similarity_threshold,
-            "message": self._load_error or "Face recognition san sang.",
+            "det_size": list(self.det_size),
+            "max_faces_per_frame": self.max_faces_per_frame,
+            "execution_backend": self._execution_backend,
+            "execution_context_id": self._execution_context_id,
+            "available_providers": self._available_providers,
+            "active_providers": self._active_providers,
+            "message": self._load_error or self._runtime_message or "Face recognition san sang.",
         }
 
     def _cosine_similarity(self, source_embedding: Any, target_embedding: Any) -> float:
@@ -202,6 +274,12 @@ class FaceRecognitionService:
             faces = self._app.get(frame_bgr)
         except Exception:  # pragma: no cover
             return []
+
+        faces = sorted(
+            faces,
+            key=lambda face: float(getattr(face, "det_score", 0.0)),
+            reverse=True,
+        )[: self.max_faces_per_frame]
 
         results: list[dict[str, Any]] = []
         for face in faces:
@@ -243,4 +321,3 @@ class FaceRecognitionService:
         if not matches:
             return None
         return matches[0]
-

@@ -501,7 +501,7 @@
                   <p>Confidence Threshold</p>
                   <strong id="confidence-value">{{ "%.2f"|format(ai_settings["confidence_threshold"]) }}</strong>
                 </div>
-                <input id="confidence-range" type="range" min="0.4" max="0.95" step="0.01" value="{{ ai_settings['confidence_threshold'] }}">
+                <input id="confidence-range" type="range" min="0.25" max="0.95" step="0.01" value="{{ ai_settings['confidence_threshold'] }}">
                 <div class="range-labels"><small>Nhạy bén</small><small>Chính xác</small></div>
               </div>
 
@@ -510,7 +510,7 @@
                   <p>Extraction Interval</p>
                   <strong><span id="interval-value">{{ "%.1f"|format(ai_settings["extraction_interval_seconds"]) }}</span> giây</strong>
                 </div>
-                <input id="interval-range" type="range" min="0.5" max="5" step="0.5" value="{{ ai_settings['extraction_interval_seconds'] }}">
+                <input id="interval-range" type="range" min="0.25" max="5" step="0.05" value="{{ ai_settings['extraction_interval_seconds'] }}">
                 <div class="callout-box">Giá trị thấp tăng độ nhạy đối với hành vi ngắn, nhưng sẽ dùng nhiều GPU hơn.</div>
               </div>
 

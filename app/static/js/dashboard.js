@@ -261,8 +261,9 @@ if (confidenceRange && confidenceValue) {
 }
 
 if (intervalRange && intervalValue) {
+  intervalValue.textContent = Number(intervalRange.value).toFixed(2);
   intervalRange.addEventListener("input", () => {
-    intervalValue.textContent = Number(intervalRange.value).toFixed(1);
+    intervalValue.textContent = Number(intervalRange.value).toFixed(2);
   });
 }
 
@@ -295,8 +296,8 @@ function applyAiSettings(settings) {
     confidenceValue.textContent = settings.confidence_threshold.toFixed(2);
   }
   if (intervalRange && intervalValue && typeof settings.extraction_interval_seconds === "number") {
-    intervalRange.value = settings.extraction_interval_seconds.toFixed(1);
-    intervalValue.textContent = settings.extraction_interval_seconds.toFixed(1);
+    intervalRange.value = settings.extraction_interval_seconds.toFixed(2);
+    intervalValue.textContent = settings.extraction_interval_seconds.toFixed(2);
   }
   if (behaviorThresholdRange && behaviorThresholdValue && typeof settings.behavior_threshold === "number") {
     behaviorThresholdRange.value = settings.behavior_threshold.toFixed(2);

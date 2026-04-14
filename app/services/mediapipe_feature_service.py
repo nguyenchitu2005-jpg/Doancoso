@@ -39,8 +39,8 @@ class MediapipeFeatureService:
 
     def __init__(
         self,
-        max_num_faces: int = 3,
-        max_num_hands: int = 2,
+        max_num_faces: int = 1,
+        max_num_hands: int = 1,
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
     ) -> None:

@@ -31,13 +31,13 @@ class SettingsService:
         return {
             "confidence_threshold": self._clamp(
                 source.get("confidence_threshold"),
-                minimum=0.4,
+                minimum=0.25,
                 maximum=0.95,
                 fallback=DEFAULT_AI_SETTINGS["confidence_threshold"],
             ),
             "extraction_interval_seconds": self._clamp(
                 source.get("extraction_interval_seconds"),
-                minimum=0.5,
+                minimum=0.25,
                 maximum=5.0,
                 fallback=DEFAULT_AI_SETTINGS["extraction_interval_seconds"],
             ),

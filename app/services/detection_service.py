@@ -47,6 +47,8 @@ class DetectionService:
         enable_mediapipe: bool = True,
         enable_face_recognition: bool = True,
         min_signal_streak: int = 2,
+        face_recognition_interval_samples: int = 4,
+        face_identity_ttl_samples: int = 12,
     ) -> None:
         self.weights_dir = Path(weights_dir)
         self.results_dir = Path(results_dir)
@@ -57,6 +59,11 @@ class DetectionService:
         self.incident_cooldown_seconds = max(0.0, incident_cooldown_seconds)
         self.max_incidents = max(1, max_incidents)
         self.min_signal_streak = max(1, min_signal_streak)
+        self.face_recognition_interval_samples = max(1, face_recognition_interval_samples)
+        self.face_identity_ttl_samples = max(
+            self.face_recognition_interval_samples,
+            face_identity_ttl_samples,
+        )
         self.gaze_warmup_seconds = 3.0
         self.results_dir.mkdir(parents=True, exist_ok=True)
         self.weights_dir.mkdir(parents=True, exist_ok=True)
@@ -75,9 +82,9 @@ class DetectionService:
         if not settings:
             return
         if "confidence_threshold" in settings:
-            self.conf_threshold = max(0.4, min(float(settings["confidence_threshold"]), 0.95))
+            self.conf_threshold = max(0.25, min(float(settings["confidence_threshold"]), 0.95))
         if "extraction_interval_seconds" in settings:
-            self.sample_interval_seconds = max(0.5, min(float(settings["extraction_interval_seconds"]), 5.0))
+            self.sample_interval_seconds = max(0.25, min(float(settings["extraction_interval_seconds"]), 5.0))
         if "behavior_threshold" in settings:
             self.behavior_model_service.score_threshold = max(0.6, min(float(settings["behavior_threshold"]), 0.98))
 
@@ -327,11 +334,10 @@ class DetectionService:
         return best_confidence >= 0.35 and best_area_ratio >= 0.05
 
     def _review_sample_interval_seconds(self) -> float:
-        # Offline review should not skip over short glances or brief phone appearances.
-        return min(self.sample_interval_seconds, 0.25)
+        return self.sample_interval_seconds
 
     def _inference_conf_threshold(self) -> float:
-        return min(self.conf_threshold, 0.25)
+        return self.conf_threshold
 
     def _should_keep_detection(self, label: str, confidence: float) -> bool:
         if label in {"cell phone", "mobile phone"}:
@@ -382,6 +388,34 @@ class DetectionService:
         if frame_identity is not None or frame_face_matches:
             return False
         return True
+
+    def _should_refresh_face_identity(
+        self,
+        reviewed_frames: int,
+        cached_identity: dict[str, Any] | None,
+        cached_identity_age: int,
+        person_detections: list[dict[str, Any]],
+        mediapipe_signals: dict[str, Any],
+    ) -> bool:
+        has_face_signal = bool(person_detections) or int(mediapipe_signals.get("face_count") or 0) > 0
+        if reviewed_frames <= 1:
+            return has_face_signal
+        if len(person_detections) > 1:
+            return has_face_signal
+        if cached_identity is None:
+            return has_face_signal and (
+                reviewed_frames <= 3 or reviewed_frames % self.face_recognition_interval_samples == 0
+            )
+        return has_face_signal and cached_identity_age >= self.face_recognition_interval_samples
+
+    def _get_cached_identity(
+        self,
+        cached_identity: dict[str, Any] | None,
+        cached_identity_age: int,
+    ) -> dict[str, Any] | None:
+        if cached_identity is None or cached_identity_age > self.face_identity_ttl_samples:
+            return None
+        return cached_identity
 
     def _crossed_streak_threshold(self, previous_streak: int, current_streak: int, required_streak: int) -> bool:
         return previous_streak < required_streak <= current_streak
@@ -734,6 +768,8 @@ class DetectionService:
         last_incident_time: dict[str, float] = {}
         signal_streaks: dict[str, int] = {}
         frame_identity_counter: Counter[str] = Counter()
+        cached_face_identity: dict[str, Any] | None = None
+        cached_face_identity_age = self.face_identity_ttl_samples + 1
         behavior_status = self.behavior_model_service.get_status()
         mediapipe_status = self._mediapipe_status()
         face_recognition_status = self._face_recognition_status()
@@ -824,13 +860,42 @@ class DetectionService:
                     mediapipe_payload = self.mediapipe_feature_service.extract(frame_bgr=frame, yolo_detections=detections)
                     mediapipe_status = self.mediapipe_feature_service.get_status()
 
+                mediapipe_features = mediapipe_payload.get("features", {})
+                mediapipe_signals = mediapipe_payload.get("signals", {})
+
                 frame_face_matches: list[dict[str, Any]] = []
                 frame_identity: dict[str, Any] | None = None
+                incident_identity = self._get_cached_identity(cached_face_identity, cached_face_identity_age)
                 if face_recognition_status.get("enabled") and self.face_recognition_service is not None:
-                    frame_face_matches = self.face_recognition_service.identify_faces(frame_bgr=frame)
-                    frame_identity = self.face_recognition_service.select_primary_identity(frame_face_matches)
-                    if frame_identity is not None:
-                        frame_identity_counter[self._identity_key(frame_identity)] += 1
+                    if self._should_refresh_face_identity(
+                        reviewed_frames=reviewed_frames,
+                        cached_identity=cached_face_identity,
+                        cached_identity_age=cached_face_identity_age,
+                        person_detections=person_detections,
+                        mediapipe_signals=mediapipe_signals,
+                    ):
+                        frame_face_matches = self.face_recognition_service.identify_faces(frame_bgr=frame)
+                        frame_identity = self.face_recognition_service.select_primary_identity(frame_face_matches)
+                        if frame_identity is not None:
+                            cached_face_identity = dict(frame_identity)
+                            cached_face_identity_age = 0
+                            incident_identity = cached_face_identity
+                            frame_identity_counter[self._identity_key(frame_identity)] += 1
+                        else:
+                            cached_face_identity_age += 1
+                            incident_identity = self._get_cached_identity(
+                                cached_face_identity,
+                                cached_face_identity_age,
+                            )
+                    elif cached_face_identity is not None:
+                        cached_face_identity_age += 1
+                        incident_identity = self._get_cached_identity(
+                            cached_face_identity,
+                            cached_face_identity_age,
+                        )
+
+                    if incident_identity is None:
+                        cached_face_identity = None
 
                 previous_multiple_people_streak = signal_streaks.get("multiple_people", 0)
                 multiple_people_streak = self._advance_streak(
@@ -866,7 +931,7 @@ class DetectionService:
                                 "event_type": "multiple_people",
                                 "snapshot_url": snapshot_url,
                             },
-                            identity=frame_identity,
+                            identity=incident_identity,
                         )
                     )
                     last_incident_time["multiple_people"] = timestamp_seconds
@@ -912,13 +977,10 @@ class DetectionService:
                                 "event_type": "cell_phone",
                                 "snapshot_url": snapshot_url,
                             },
-                            identity=frame_identity,
+                            identity=incident_identity,
                         )
                     )
                     last_incident_time["cell_phone"] = timestamp_seconds
-
-                mediapipe_features = mediapipe_payload.get("features", {})
-                mediapipe_signals = mediapipe_payload.get("signals", {})
 
                 previous_head_pose_streak = signal_streaks.get("head_pose", 0)
                 head_pose_streak = self._advance_streak(
@@ -971,7 +1033,7 @@ class DetectionService:
                                 "snapshot_url": snapshot_url,
                                 "details": self._head_pose_details(head_pose, head_pose_strength),
                             },
-                            identity=frame_identity,
+                            identity=incident_identity,
                         )
                     )
                     last_incident_time["head_pose"] = timestamp_seconds
@@ -1023,7 +1085,7 @@ class DetectionService:
                                 "snapshot_url": snapshot_url,
                                 "details": self._gaze_details(direction),
                             },
-                            identity=frame_identity,
+                            identity=incident_identity,
                         )
                     )
                     last_incident_time["gaze"] = timestamp_seconds
@@ -1063,7 +1125,7 @@ class DetectionService:
                                 "event_type": "hand_phone",
                                 "snapshot_url": snapshot_url,
                             },
-                            identity=frame_identity,
+                            identity=incident_identity,
                         )
                     )
                     last_incident_time["hand_phone"] = timestamp_seconds
@@ -1100,7 +1162,7 @@ class DetectionService:
                                 "event_type": "face_missing",
                                 "snapshot_url": None,
                             },
-                            identity=frame_identity,
+                            identity=incident_identity,
                         )
                     )
                     last_incident_time["face_missing"] = timestamp_seconds
@@ -1158,7 +1220,7 @@ class DetectionService:
                                     "snapshot_url": snapshot_url,
                                     "details": reason_copy or "Khung hinh co dac trung gan voi mau nghi van trong dataset.",
                                 },
-                                identity=frame_identity,
+                                identity=incident_identity,
                             )
                         )
                         last_incident_time["behavior_model"] = timestamp_seconds
