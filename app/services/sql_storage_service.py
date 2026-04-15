@@ -28,6 +28,21 @@ except ImportError:  # pragma: no cover
 
 
 class SQLStorageService:
+    def _teacher_review_payload(self, decision: str | None, decided_at: datetime | None) -> dict[str, Any]:
+        normalized = str(decision or "").strip().lower()
+        if normalized not in {"confirmed", "dismissed"}:
+            normalized = "pending"
+        label_map = {
+            "pending": "Chua quyet dinh",
+            "confirmed": "Da xac nhan gian lan",
+            "dismissed": "Da bo qua",
+        }
+        return {
+            "status": normalized,
+            "label": label_map[normalized],
+            "decided_at": self._normalize_created_at(decided_at) or None,
+        }
+
     def _risk_rank(self, risk: str | None) -> int:
         return {"high": 3, "medium": 2, "low": 1}.get(str(risk or "low"), 1)
 
@@ -387,6 +402,10 @@ class SQLStorageService:
         incidents = result_payload.get("incidents", []) or []
         candidate_rollups = self._build_candidate_rollups(result_payload)
         video_hash = self._resolve_video_hash(video_path=video_path, result_payload=result_payload, upload_info=upload_info)
+        teacher_review = result_payload.get("teacher_review", {}) or {}
+        teacher_decision = str(teacher_review.get("status") or "").strip().lower()
+        if teacher_decision not in {"confirmed", "dismissed"}:
+            teacher_decision = None
 
         try:
             with db_session_manager.session_scope() as session:
@@ -402,6 +421,7 @@ class SQLStorageService:
                     message=str(result_payload.get("message") or ""),
                     total_violations=int(summary.get("total_violations") or 0),
                     reviewed_frames=int(summary.get("reviewed_frames") or 0),
+                    teacher_decision=teacher_decision,
                     summary_json=json.dumps(summary, ensure_ascii=False),
                     engines_json=json.dumps(engines, ensure_ascii=False),
                 )
@@ -494,9 +514,54 @@ class SQLStorageService:
                     "incidents": incidents,
                     "engines": self._parse_json_text(review.engines_json),
                     "message": review.message,
+                    "teacher_review": self._teacher_review_payload(
+                        decision=getattr(review, "teacher_decision", None),
+                        decided_at=getattr(review, "teacher_decided_at", None),
+                    ),
                     "result_path": review.result_path,
                     "created_at": self._normalize_created_at(review.created_at),
                 }
+        except (SQLAlchemyError, RuntimeError):
+            return None
+
+    def update_review_decision(
+        self,
+        *,
+        decision: str,
+        result_path: str = "",
+        video_path: str = "",
+    ) -> dict[str, Any] | None:
+        if not self.is_available() or select is None or ReviewResult is None:
+            return None
+
+        normalized_decision = str(decision or "").strip().lower()
+        if normalized_decision not in {"confirmed", "dismissed"}:
+            raise ValueError("Quyet dinh khong hop le.")
+
+        normalized_result_path = str(result_path or "").strip()
+        normalized_video_path = str(video_path or "").strip()
+
+        try:
+            with db_session_manager.session_scope() as session:
+                review = None
+                if normalized_result_path:
+                    review = session.scalar(select(ReviewResult).where(ReviewResult.result_path == normalized_result_path))
+                if review is None and normalized_video_path:
+                    review = session.scalar(select(ReviewResult).where(ReviewResult.video_path == normalized_video_path))
+                if review is None:
+                    review = session.scalar(select(ReviewResult).order_by(ReviewResult.created_at.desc()))
+                if review is None:
+                    return None
+
+                decided_at = datetime.now(timezone.utc)
+                review.teacher_decision = normalized_decision
+                review.teacher_decided_at = decided_at
+                session.flush()
+
+                return self._teacher_review_payload(
+                    decision=normalized_decision,
+                    decided_at=decided_at,
+                )
         except (SQLAlchemyError, RuntimeError):
             return None
 

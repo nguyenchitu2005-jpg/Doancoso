@@ -1024,6 +1024,18 @@ h3 {
   background: linear-gradient(180deg, rgba(255, 218, 214, 0.9), rgba(255, 218, 214, 0.7));
 }
 
+.risk-card.risk-card-pending {
+  background: linear-gradient(180deg, rgba(255, 218, 214, 0.9), rgba(255, 218, 214, 0.7));
+}
+
+.risk-card.risk-card-confirmed {
+  background: linear-gradient(180deg, rgba(255, 218, 214, 0.98), rgba(255, 191, 184, 0.9));
+}
+
+.risk-card.risk-card-dismissed {
+  background: linear-gradient(180deg, rgba(232, 236, 242, 0.96), rgba(217, 223, 231, 0.88));
+}
+
 .risk-card strong {
   font-size: 3rem;
   line-height: 1;
@@ -1031,9 +1043,43 @@ h3 {
   color: var(--tertiary);
 }
 
+.risk-card.risk-card-dismissed strong {
+  color: #334155;
+}
+
 .risk-card p {
   line-height: 1.6;
   color: #652126;
+}
+
+.risk-card.risk-card-dismissed p,
+.risk-card.risk-card-dismissed .micro-label,
+.risk-card.risk-card-dismissed .review-decision-feedback {
+  color: #475569;
+}
+
+.review-decision-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.review-decision-status,
+.review-decision-feedback {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.review-decision-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.review-action-button {
+  min-height: 42px;
+  padding: 0 16px;
 }
 
 .incident-rail {
@@ -1212,6 +1258,32 @@ h3 {
 
 .risk-badge {
   min-width: 90px;
+}
+
+.verdict-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 128px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.verdict-badge.verdict-confirmed {
+  color: #8f0b19;
+  background: rgba(255, 218, 214, 0.92);
+}
+
+.verdict-badge.verdict-dismissed {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.verdict-badge.verdict-pending {
+  color: #735300;
+  background: rgba(255, 239, 184, 0.9);
 }
 
 .risk-badge.risk-high {

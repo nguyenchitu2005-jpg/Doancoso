@@ -1,5 +1,5 @@
 {
-  "confidence_threshold": 0.25,
+  "confidence_threshold": 0.75,
   "extraction_interval_seconds": 0.4,
   "behavior_threshold": 0.85
 }

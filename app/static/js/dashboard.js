@@ -5,6 +5,11 @@ const dashboardPayload = JSON.parse(document.getElementById("dashboard-data").te
 const reviewPayloadElement = document.getElementById("review-data");
 const reviewPayload = reviewPayloadElement ? JSON.parse(reviewPayloadElement.textContent) : { incidents: [] };
 const appShell = document.querySelector(".app-shell");
+const teacherReviewCard = document.getElementById("teacher-review-card");
+const teacherReviewStatus = document.getElementById("teacher-review-status");
+const teacherReviewFeedback = document.getElementById("teacher-review-feedback");
+const confirmFraudButton = document.getElementById("confirm-fraud-button");
+const dismissReviewButton = document.getElementById("dismiss-review-button");
 
 const titleMap = {
   overview: "System Oversight",
@@ -32,6 +37,12 @@ const riskLabels = {
   low: "An toàn",
 };
 
+const teacherVerdictLabels = {
+  confirmed: "Gian lận",
+  dismissed: "Không gian lận",
+  pending: "Chưa kết luận",
+};
+
 const studentTableBody = document.getElementById("student-table-body");
 const studentTableSummary = document.getElementById("student-table-summary");
 const riskChips = document.querySelectorAll(".filter-chip");
@@ -41,6 +52,119 @@ const globalSearchSuggestions = document.getElementById("global-search-suggestio
 const allStudents = Array.isArray(dashboardPayload.students) ? dashboardPayload.students : [];
 let activeRiskFilter = "all";
 let activeSearchQuery = "";
+
+function normalizeTeacherReview(student) {
+  const review = student && typeof student === "object" ? (student.teacher_review || {}) : {};
+  const status = ["confirmed", "dismissed"].includes(review.status) ? review.status : "pending";
+  return {
+    status,
+    label: teacherVerdictLabels[status],
+    decided_at: review.decided_at || null,
+  };
+}
+
+function getReviewedCandidateIds() {
+  const candidateIds = new Set();
+  if (Array.isArray(reviewPayload.students_report)) {
+    reviewPayload.students_report.forEach((student) => {
+      const candidateId = String(student?.candidate_id || "").trim();
+      if (candidateId && candidateId !== "UNKNOWN") {
+        candidateIds.add(candidateId);
+      }
+    });
+  }
+  if (!candidateIds.size) {
+    const primaryCandidateId = String(reviewPayload.primary_candidate?.candidate_id || "").trim();
+    if (primaryCandidateId && primaryCandidateId !== "UNKNOWN") {
+      candidateIds.add(primaryCandidateId);
+    }
+  }
+  return candidateIds;
+}
+
+function syncStudentTeacherReview() {
+  const reviewedCandidateIds = getReviewedCandidateIds();
+  allStudents.forEach((student) => {
+    const candidateId = String(student?.candidate_id || "").trim();
+    const nextStatus = reviewedCandidateIds.has(candidateId) ? reviewPayload.teacher_review?.status : "pending";
+    student.teacher_review = normalizeTeacherReview({ teacher_review: { status: nextStatus } });
+  });
+}
+
+function renderTeacherReview() {
+  const review = reviewPayload.teacher_review || {};
+  const status = review.status || "pending";
+  if (teacherReviewCard) {
+    teacherReviewCard.classList.remove("risk-card-pending", "risk-card-confirmed", "risk-card-dismissed");
+    teacherReviewCard.classList.add(`risk-card-${status}`);
+    if (status === "dismissed") {
+      teacherReviewCard.style.background = "linear-gradient(180deg, rgba(232, 236, 242, 0.96), rgba(217, 223, 231, 0.88))";
+    } else if (status === "confirmed") {
+      teacherReviewCard.style.background = "linear-gradient(180deg, rgba(255, 218, 214, 0.98), rgba(255, 191, 184, 0.9))";
+    } else {
+      teacherReviewCard.style.background = "linear-gradient(180deg, rgba(255, 218, 214, 0.9), rgba(255, 218, 214, 0.7))";
+    }
+  }
+  if (teacherReviewStatus) {
+    teacherReviewStatus.textContent = `Quyet dinh giao vien: ${review.label || "Chua quyet dinh"}`;
+  }
+}
+
+function showTeacherReviewFeedback(message, isError = false) {
+  if (!teacherReviewFeedback) {
+    return;
+  }
+  teacherReviewFeedback.hidden = false;
+  teacherReviewFeedback.textContent = message;
+  teacherReviewFeedback.style.color = isError ? "#b42318" : "#0f5132";
+}
+
+async function submitTeacherReviewDecision(decision) {
+  if (!reviewPayload.result_path && !reviewPayload.video_path) {
+    showTeacherReviewFeedback("Khong tim thay lan hau kiem de cap nhat.", true);
+    return;
+  }
+
+  if (confirmFraudButton) {
+    confirmFraudButton.disabled = true;
+  }
+  if (dismissReviewButton) {
+    dismissReviewButton.disabled = true;
+  }
+  showTeacherReviewFeedback("Dang cap nhat quyet dinh...");
+
+  try {
+    const response = await fetch("/review/decision", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        decision,
+        result_path: reviewPayload.result_path || null,
+        video_path: reviewPayload.video_path || null,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.message || "Khong the cap nhat quyet dinh.");
+    }
+    reviewPayload.teacher_review = payload.teacher_review || {};
+    renderTeacherReview();
+    syncStudentTeacherReview();
+    renderStudents();
+    showTeacherReviewFeedback(payload.message || "Da cap nhat quyet dinh.");
+  } catch (error) {
+    showTeacherReviewFeedback(error.message || "Khong the cap nhat quyet dinh.", true);
+  } finally {
+    if (confirmFraudButton) {
+      confirmFraudButton.disabled = false;
+    }
+    if (dismissReviewButton) {
+      dismissReviewButton.disabled = false;
+    }
+  }
+}
 
 function normalizeText(value) {
   return String(value || "")
@@ -164,7 +288,9 @@ function renderStudents() {
     return;
   }
 
-  studentTableBody.innerHTML = rows.map((student) => `
+  studentTableBody.innerHTML = rows.map((student) => {
+    const teacherReview = normalizeTeacherReview(student);
+    return `
     <tr>
       <td>
         <div class="candidate-cell">
@@ -184,9 +310,10 @@ function renderStudents() {
       <td><div class="table-chip-row">${behaviorChips(student.behaviors)}</div></td>
       <td><strong>${student.alerts}</strong></td>
       <td><span class="risk-badge risk-${student.risk}">${riskLabels[student.risk]}</span></td>
-      <td><button class="text-button" type="button">Chi tiết hậu kiểm</button></td>
+      <td><span class="verdict-badge verdict-${teacherReview.status}">${teacherReview.label}</span></td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
 
   studentTableSummary.textContent = `Hiển thị ${rows.length} mục trong số ${allStudents.length} hồ sơ tiêu biểu`;
 }
@@ -485,6 +612,20 @@ function initializeReviewTimeline() {
 }
 
 activateTab(appShell?.dataset.initialTab || "overview");
+syncStudentTeacherReview();
 renderStudents();
 initializeReviewTimeline();
 syncSelectedFileState();
+renderTeacherReview();
+
+if (confirmFraudButton) {
+  confirmFraudButton.addEventListener("click", () => {
+    submitTeacherReviewDecision("confirmed");
+  });
+}
+
+if (dismissReviewButton) {
+  dismissReviewButton.addEventListener("click", () => {
+    submitTeacherReviewDecision("dismissed");
+  });
+}

@@ -32,6 +32,12 @@ from app.services.settings_service import get_ai_settings
 class DetectionService:
     """Run a YOLO-based review pass and save timeline snapshots."""
 
+    TEACHER_REVIEW_LABELS = {
+        "pending": "Chua quyet dinh",
+        "confirmed": "Da xac nhan gian lan",
+        "dismissed": "Da bo qua",
+    }
+
     def __init__(
         self,
         weights_dir: str | Path = "weights",
@@ -47,8 +53,9 @@ class DetectionService:
         enable_mediapipe: bool = True,
         enable_face_recognition: bool = True,
         min_signal_streak: int = 2,
-        face_recognition_interval_samples: int = 4,
-        face_identity_ttl_samples: int = 12,
+        mediapipe_interval_samples: int = 3,
+        face_recognition_interval_samples: int = 8,
+        face_identity_ttl_samples: int = 24,
     ) -> None:
         self.weights_dir = Path(weights_dir)
         self.results_dir = Path(results_dir)
@@ -59,6 +66,7 @@ class DetectionService:
         self.incident_cooldown_seconds = max(0.0, incident_cooldown_seconds)
         self.max_incidents = max(1, max_incidents)
         self.min_signal_streak = max(1, min_signal_streak)
+        self.mediapipe_interval_samples = max(1, mediapipe_interval_samples)
         self.face_recognition_interval_samples = max(1, face_recognition_interval_samples)
         self.face_identity_ttl_samples = max(
             self.face_recognition_interval_samples,
@@ -129,6 +137,16 @@ class DetectionService:
         output_path = self.results_dir / f"{video_path.stem}.json"
         output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return output_path
+
+    def _teacher_review_payload(self, status: str | None = None, decided_at: str | None = None) -> dict[str, str | None]:
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status not in self.TEACHER_REVIEW_LABELS:
+            normalized_status = "pending"
+        return {
+            "status": normalized_status,
+            "label": self.TEACHER_REVIEW_LABELS[normalized_status],
+            "decided_at": str(decided_at or "") or None,
+        }
 
     def _analysis_mode(self) -> str:
         modes = ["yolo"]
@@ -417,6 +435,15 @@ class DetectionService:
             return None
         return cached_identity
 
+    def _should_refresh_mediapipe(
+        self,
+        reviewed_frames: int,
+        cached_payload: dict[str, Any] | None,
+    ) -> bool:
+        if cached_payload is None:
+            return True
+        return (reviewed_frames - 1) % self.mediapipe_interval_samples == 0
+
     def _crossed_streak_threshold(self, previous_streak: int, current_streak: int, required_streak: int) -> bool:
         return previous_streak < required_streak <= current_streak
 
@@ -538,10 +565,65 @@ class DetectionService:
                 data = json.loads(file_path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 continue
+            data["teacher_review"] = self._teacher_review_payload(**(data.get("teacher_review", {}) or {}))
             data["result_filename"] = file_path.name
             data["result_path"] = str(file_path)
             return data
         return None
+
+    def update_result_decision(
+        self,
+        *,
+        decision: str,
+        result_path: str = "",
+        video_path: str = "",
+    ) -> dict[str, Any] | None:
+        normalized_decision = str(decision or "").strip().lower()
+        if normalized_decision not in {"confirmed", "dismissed"}:
+            raise ValueError("Quyet dinh khong hop le.")
+
+        target_path = None
+        normalized_result_path = str(result_path or "").strip()
+        normalized_video_path = str(video_path or "").strip()
+        if normalized_result_path:
+            candidate = Path(normalized_result_path)
+            if candidate.exists():
+                target_path = candidate
+
+        if target_path is None:
+            for file_path in self._iter_result_files():
+                try:
+                    payload = json.loads(file_path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue
+                if normalized_video_path and str(payload.get("video_path") or "").strip() == normalized_video_path:
+                    target_path = file_path
+                    break
+
+        if target_path is None:
+            latest_result = self.get_latest_result()
+            if latest_result is not None:
+                target_path = Path(str(latest_result.get("result_path") or ""))
+
+        if target_path is None or not target_path.exists():
+            return None
+
+        try:
+            payload = json.loads(target_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+        decided_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        teacher_review = self._teacher_review_payload(
+            status=normalized_decision,
+            decided_at=decided_at,
+        )
+        payload["teacher_review"] = teacher_review
+        try:
+            target_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            return None
+        return teacher_review
 
     def list_results(self, limit: int = 5) -> list[dict]:
         results = []
@@ -665,28 +747,6 @@ class DetectionService:
         for detection in detections:
             x1, y1, x2, y2 = [int(value) for value in detection["box"]]
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 82, 255), 2)
-            tag = f"{detection['label']} {detection['confidence'] * 100:.0f}%"
-            cv2.putText(
-                annotated,
-                tag,
-                (x1, max(16, y1 - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.52,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
-
-        cv2.putText(
-            annotated,
-            headline,
-            (18, 28),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (50, 50, 245),
-            2,
-            cv2.LINE_AA,
-        )
 
         snapshot_name = f"frame_{frame_index:06d}_{event_slug}.jpg"
         snapshot_path = snapshot_dir / snapshot_name
@@ -768,6 +828,7 @@ class DetectionService:
         last_incident_time: dict[str, float] = {}
         signal_streaks: dict[str, int] = {}
         frame_identity_counter: Counter[str] = Counter()
+        cached_mediapipe_payload: dict[str, Any] | None = None
         cached_face_identity: dict[str, Any] | None = None
         cached_face_identity_age = self.face_identity_ttl_samples + 1
         behavior_status = self.behavior_model_service.get_status()
@@ -857,8 +918,17 @@ class DetectionService:
                     "message": mediapipe_status.get("message", "MediaPipe unavailable."),
                 }
                 if mediapipe_status.get("enabled") and self.mediapipe_feature_service is not None:
-                    mediapipe_payload = self.mediapipe_feature_service.extract(frame_bgr=frame, yolo_detections=detections)
-                    mediapipe_status = self.mediapipe_feature_service.get_status()
+                    if self._should_refresh_mediapipe(
+                        reviewed_frames=reviewed_frames,
+                        cached_payload=cached_mediapipe_payload,
+                    ):
+                        cached_mediapipe_payload = self.mediapipe_feature_service.extract(
+                            frame_bgr=frame,
+                            yolo_detections=detections,
+                        )
+                        mediapipe_status = self.mediapipe_feature_service.get_status()
+                    if cached_mediapipe_payload is not None:
+                        mediapipe_payload = cached_mediapipe_payload
 
                 mediapipe_features = mediapipe_payload.get("features", {})
                 mediapipe_signals = mediapipe_payload.get("signals", {})
@@ -1324,6 +1394,7 @@ class DetectionService:
                 "behavior_model": behavior_status,
                 "face_recognition": face_recognition_status,
             },
+            "teacher_review": self._teacher_review_payload(),
             "message": (
                 f"Phan tich xong {reviewed_frames} frame mau, ghi nhan {len(incidents)} su co. "
                 f"Che do: {self._analysis_mode()}."

@@ -46,6 +46,8 @@ class ReviewResult(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     total_violations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reviewed_frames: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    teacher_decision: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    teacher_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     summary_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     engines_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, index=True)

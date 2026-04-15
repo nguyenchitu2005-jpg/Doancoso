@@ -75,11 +75,29 @@ class DatabaseSessionManager:
             column_name="video_hash",
             ddl="ALTER TABLE review_results ADD video_hash VARCHAR(128) NULL",
         )
+        self._ensure_nullable_column(
+            inspector=inspector,
+            table_name="review_results",
+            column_name="teacher_decision",
+            ddl="ALTER TABLE review_results ADD teacher_decision VARCHAR(32) NULL",
+        )
+        self._ensure_nullable_column(
+            inspector=inspector,
+            table_name="review_results",
+            column_name="teacher_decided_at",
+            ddl="ALTER TABLE review_results ADD teacher_decided_at DATETIMEOFFSET NULL",
+        )
         self._ensure_index(
             inspector=inspector,
             table_name="review_results",
             index_name="ix_review_results_video_hash",
             ddl="CREATE INDEX ix_review_results_video_hash ON review_results (video_hash)",
+        )
+        self._ensure_index(
+            inspector=inspector,
+            table_name="review_results",
+            index_name="ix_review_results_teacher_decision",
+            ddl="CREATE INDEX ix_review_results_teacher_decision ON review_results (teacher_decision)",
         )
 
     def _ensure_nullable_column(self, inspector, table_name: str, column_name: str, ddl: str) -> None:

@@ -31,6 +31,12 @@ class SettingsPayload(BaseModel):
     behavior_threshold: float
 
 
+class ReviewDecisionPayload(BaseModel):
+    decision: str
+    result_path: str | None = None
+    video_path: str | None = None
+
+
 def _risk_priority(risk: str) -> int:
     return {"high": 3, "medium": 2, "low": 1}.get(str(risk or "low"), 1)
 
@@ -64,6 +70,18 @@ def _risk_label_vi(risk: str) -> str:
 
 def _risk_badge_vi(risk: str) -> str:
     return {"high": "Rat cao", "medium": "Trung binh", "low": "Thap"}.get(str(risk or "low"), "Thap")
+
+
+def _teacher_verdict_payload(status: str | None) -> dict[str, str | None]:
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in {"confirmed", "dismissed"}:
+        normalized_status = "pending"
+    label_map = {
+        "confirmed": "Gian lận",
+        "dismissed": "Không gian lận",
+        "pending": "Chưa kết luận",
+    }
+    return {"status": normalized_status, "label": label_map[normalized_status], "decided_at": None}
 
 
 def _format_csv_datetime(raw_value: str | None) -> str:
@@ -219,11 +237,18 @@ def build_latest_review_payload(recent_uploads: list[dict]) -> dict:
         "analysis_mode": "n/a",
         "video_name": None,
         "video_url": None,
+        "video_path": None,
+        "result_path": None,
         "summary": {"total_violations": 0, "reviewed_frames": 0},
         "incidents": [],
         "students_report": [],
         "primary_candidate": None,
         "engines": {},
+        "teacher_review": {
+            "status": "pending",
+            "label": "Chua quyet dinh",
+            "decided_at": None,
+        },
         "message": "Chua co du lieu hau kiem.",
         "created_at": None,
     }
@@ -239,6 +264,7 @@ def build_latest_review_payload(recent_uploads: list[dict]) -> dict:
             latest_review["summary"].get("students_report", []),
         )
         latest_review["engines"] = latest_result.get("engines", {})
+        latest_review["teacher_review"] = latest_result.get("teacher_review", latest_review["teacher_review"])
         latest_review["primary_candidate"] = latest_result.get(
             "primary_candidate",
             latest_review["summary"].get("primary_candidate"),
@@ -247,6 +273,8 @@ def build_latest_review_payload(recent_uploads: list[dict]) -> dict:
             latest_review["primary_candidate"] = _pick_primary_candidate_from_students(latest_review["students_report"])
         latest_review["message"] = latest_result.get("message", latest_review["message"])
         latest_review["created_at"] = latest_result.get("created_at")
+        latest_review["result_path"] = latest_result.get("result_path")
+        latest_review["video_path"] = latest_result.get("video_path")
 
         video_path = latest_result.get("video_path")
         if video_path:
@@ -296,7 +324,31 @@ def build_dashboard_context(request: Request) -> dict:
         high_risk = len([item for item in latest_students_report if item.get("risk") == "high"])
         dashboard_payload["overview"]["active_sessions"] = len(latest_students_report)
         dashboard_payload["overview"]["integrity_score"] = f"{max(0.0, 100.0 - (high_risk * 8.0)):.1f}%"
-    dashboard_payload["students"] = historical_students or latest_students_report
+    latest_teacher_review = latest_review.get("teacher_review") or {}
+    latest_teacher_verdict = _teacher_verdict_payload(latest_teacher_review.get("status"))
+    latest_teacher_verdict["decided_at"] = latest_teacher_review.get("decided_at")
+    latest_candidate_ids = {
+        str(item.get("candidate_id") or "").strip()
+        for item in latest_students_report
+        if str(item.get("candidate_id") or "").strip() and str(item.get("candidate_id") or "").strip() != "UNKNOWN"
+    }
+    if not latest_candidate_ids:
+        primary_candidate_id = str((latest_review.get("primary_candidate") or {}).get("candidate_id") or "").strip()
+        if primary_candidate_id and primary_candidate_id != "UNKNOWN":
+            latest_candidate_ids.add(primary_candidate_id)
+
+    source_students = historical_students or latest_students_report
+    dashboard_payload["students"] = [
+        {
+            **student,
+            "teacher_review": (
+                dict(latest_teacher_verdict)
+                if str(student.get("candidate_id") or "").strip() in latest_candidate_ids
+                else _teacher_verdict_payload(None)
+            ),
+        }
+        for student in source_students
+    ]
     student_items = dashboard_payload.get("students", [])
     students_total = len(student_items)
     students_high_risk = len([item for item in student_items if str(item.get("risk") or "") == "high"])
@@ -580,5 +632,40 @@ async def reset_settings() -> JSONResponse:
             "message": "Da khoi phuc cau hinh mac dinh.",
             "settings": saved_settings,
             "defaults": DEFAULT_AI_SETTINGS,
+        }
+    )
+
+
+@router.post("/review/decision", tags=["web"])
+async def update_review_decision(payload: ReviewDecisionPayload) -> JSONResponse:
+    decision = str(payload.decision or "").strip().lower()
+    if decision not in {"confirmed", "dismissed"}:
+        return JSONResponse({"status": "error", "message": "Quyet dinh khong hop le."}, status_code=400)
+
+    teacher_review = detection_service.update_result_decision(
+        decision=decision,
+        result_path=str(payload.result_path or ""),
+        video_path=str(payload.video_path or ""),
+    )
+    if teacher_review is None:
+        return JSONResponse({"status": "error", "message": "Khong tim thay ket qua de cap nhat."}, status_code=404)
+
+    if sql_storage_service.is_available():
+        sql_storage_service.update_review_decision(
+            decision=decision,
+            result_path=str(payload.result_path or ""),
+            video_path=str(payload.video_path or ""),
+        )
+
+    success_message = (
+        "Da xac nhan gian lan cho lan hau kiem nay."
+        if decision == "confirmed"
+        else "Da danh dau bo qua cho lan hau kiem nay."
+    )
+    return JSONResponse(
+        {
+            "status": "success",
+            "message": success_message,
+            "teacher_review": teacher_review,
         }
     )

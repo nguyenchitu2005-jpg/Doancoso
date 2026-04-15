@@ -362,10 +362,34 @@
                   </div>
                 </article>
 
-                <article class="risk-card">
+                <article
+                  id="teacher-review-card"
+                  class="risk-card risk-card-{{ latest_review.teacher_review.status or 'pending' }}"
+                >
                   <p class="micro-label">Danh gia rui ro</p>
                   <strong>{{ review_candidate.risk_label }}</strong>
                   <p>{{ review_risk_message }}</p>
+                  <div class="review-decision-panel">
+                    <div class="review-decision-actions">
+                      <button
+                        id="confirm-fraud-button"
+                        class="primary-button review-action-button"
+                        type="button"
+                        {% if not latest_review.result_path and not latest_review.video_path %}disabled{% endif %}
+                      >
+                        Xác nhận gian lận
+                      </button>
+                      <button
+                        id="dismiss-review-button"
+                        class="secondary-button review-action-button"
+                        type="button"
+                        {% if not latest_review.result_path and not latest_review.video_path %}disabled{% endif %}
+                      >
+                        Bỏ qua
+                      </button>
+                    </div>
+                    <p id="teacher-review-feedback" class="review-decision-feedback" hidden></p>
+                  </div>
                 </article>
               </div>
             </div>
@@ -432,7 +456,7 @@
                     <th>Hành vi ghi nhận</th>
                     <th>Tổng cảnh báo</th>
                     <th>Mức độ rủi ro</th>
-                    <th>Thao tác</th>
+                    <th>Kết luận</th>
                   </tr>
                 </thead>
                 <tbody id="student-table-body"></tbody>
@@ -581,5 +605,5 @@
 {% block scripts %}
   <script id="dashboard-data" type="application/json">{{ dashboard | tojson }}</script>
   <script id="review-data" type="application/json">{{ latest_review | tojson }}</script>
-  <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260410"></script>
+  <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260415b"></script>
 {% endblock %}
