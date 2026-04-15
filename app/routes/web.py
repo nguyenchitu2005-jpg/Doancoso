@@ -10,6 +10,16 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import BaseModel
 from fastapi.templating import Jinja2Templates
 
+try:
+    import cv2
+except ImportError:  # pragma: no cover
+    cv2 = None
+
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover
+    np = None
+
 from app.services.dashboard_service import get_dashboard_payload
 from app.services.detection_service import DetectionService
 from app.services.settings_service import DEFAULT_AI_SETTINGS, get_ai_settings, settings_service
@@ -652,6 +662,45 @@ async def upload_review_video(video_file: UploadFile = File(...)) -> RedirectRes
         )
 
     return RedirectResponse(url=f"/?{query}", status_code=303)
+
+
+@router.post("/review/live/start", tags=["web"])
+async def start_live_review() -> JSONResponse:
+    detection_service.apply_runtime_settings(get_ai_settings())
+    payload = detection_service.reset_live_session()
+    return JSONResponse(
+        {
+            "status": "success",
+            "message": payload.get("message") or "Da khoi tao phien live test.",
+        }
+    )
+
+
+@router.post("/review/live/frame", tags=["web"])
+async def analyze_live_review_frame(frame: UploadFile = File(...)) -> JSONResponse:
+    if cv2 is None or np is None:
+        return JSONResponse(
+            {"status": "error", "message": "Thieu opencv hoac numpy de xu ly webcam."},
+            status_code=500,
+        )
+
+    image_bytes = await frame.read()
+    await frame.close()
+    if not image_bytes:
+        return JSONResponse({"status": "error", "message": "Khong nhan duoc frame webcam."}, status_code=400)
+
+    frame_array = np.frombuffer(image_bytes, dtype=np.uint8)
+    frame_bgr = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
+    if frame_bgr is None:
+        return JSONResponse({"status": "error", "message": "Khong giai ma duoc frame webcam."}, status_code=400)
+
+    try:
+        detection_service.apply_runtime_settings(get_ai_settings())
+        payload = detection_service.analyze_live_frame(frame_bgr)
+    except (RuntimeError, ValueError, FileNotFoundError) as exc:
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=500)
+
+    return JSONResponse(payload)
 
 
 @router.post("/settings", tags=["web"])

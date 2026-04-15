@@ -300,6 +300,11 @@
                   </div>
                 </form>
 
+                <div class="live-test-actions">
+                  <button id="toggle-live-test-button" class="secondary-button" type="button">Bat live test</button>
+                  <p id="live-test-feedback" class="panel-subtitle">Bat webcam de test canh bao thoi gian thuc trong khung hinh nay.</p>
+                </div>
+
                 {% if upload_feedback %}
                   <div class="feedback-card {{ upload_feedback.status }}">
                     <span class="material-symbols-outlined">
@@ -320,7 +325,7 @@
 
               </article>
 
-              <article class="video-stage {% if latest_review.video_url %}has-video{% endif %}">
+              <article id="review-video-stage" class="video-stage {% if latest_review.video_url %}has-video{% endif %}">
                 <div class="stage-flag">
                   <span class="signal-live"></span>
                   <span id="review-stage-flag-text">
@@ -335,13 +340,14 @@
                 {% if latest_review.video_url %}
                   <video id="review-video-player" class="review-video-player" controls preload="metadata" src="{{ latest_review.video_url }}"></video>
                 {% else %}
-                  <div class="stage-scene">
+                  <div id="review-stage-placeholder" class="stage-scene">
                     <div class="scene-glow"></div>
                     <div class="scene-figure figure-left"></div>
                     <div class="scene-figure figure-right"></div>
                     <div class="scene-desk"></div>
                   </div>
                 {% endif %}
+                <video id="live-camera-player" class="review-video-player live-camera-player" autoplay playsinline muted hidden></video>
               </article>
 
               <div class="candidate-grid">
@@ -609,5 +615,5 @@
 {% block scripts %}
   <script id="dashboard-data" type="application/json">{{ dashboard | tojson }}</script>
   <script id="review-data" type="application/json">{{ latest_review | tojson }}</script>
-  <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260415g"></script>
+  <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260415i"></script>
 {% endblock %}

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import time
 from collections import Counter
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,7 @@ class DetectionService:
         self.mediapipe_feature_service = MediapipeFeatureService() if enable_mediapipe else None
         self.enable_face_recognition = enable_face_recognition
         self.face_recognition_service = FaceRecognitionService() if enable_face_recognition else None
+        self._live_review_state: dict[str, Any] | None = None
         self.apply_runtime_settings(get_ai_settings())
 
     def apply_runtime_settings(self, settings: dict[str, Any] | None) -> None:
@@ -110,6 +112,9 @@ class DetectionService:
     def _format_timestamp(self, seconds: float) -> str:
         total_seconds = max(0, int(seconds))
         return str(timedelta(seconds=total_seconds)).rjust(8, "0")
+
+    def _format_clock_timestamp(self) -> str:
+        return datetime.now().strftime("%H:%M:%S")
 
     def _iter_result_files(self) -> list[Path]:
         return sorted(self.results_dir.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
@@ -754,6 +759,374 @@ class DetectionService:
             return None
 
         return f"/results/{snapshot_dir.name}/{snapshot_name}"
+
+    def _encode_live_snapshot(self, frame, detections: list[dict[str, Any]] | None = None) -> str | None:
+        if cv2 is None:
+            return None
+
+        annotated = frame.copy()
+        for detection in detections or []:
+            x1, y1, x2, y2 = [int(value) for value in detection["box"]]
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 82, 255), 2)
+
+        success, encoded = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+        if not success:
+            return None
+        return f"data:image/jpeg;base64,{base64.b64encode(encoded.tobytes()).decode('ascii')}"
+
+    def reset_live_session(self) -> dict[str, Any]:
+        self._live_review_state = {
+            "started_at": time.perf_counter(),
+            "reviewed_frames": 0,
+            "last_incident_time": {},
+            "signal_streaks": {},
+            "cached_mediapipe_payload": None,
+            "cached_face_identity": None,
+            "cached_face_identity_age": self.face_identity_ttl_samples + 1,
+            "history": [],
+        }
+        if self.enable_mediapipe and self.mediapipe_feature_service is not None:
+            self.mediapipe_feature_service.reset_session_state()
+        return {"status": "ready", "message": "Live review session reset."}
+
+    def _ensure_live_session(self) -> dict[str, Any]:
+        if self._live_review_state is None:
+            self.reset_live_session()
+        return self._live_review_state or {}
+
+    def _predict_detections(self, frame) -> tuple[list[dict[str, Any]], dict[int, str] | list[str]]:
+        model = self._load_model()
+        prediction = model.predict(
+            source=frame,
+            conf=self._inference_conf_threshold(),
+            verbose=False,
+        )[0]
+        names = prediction.names if prediction.names is not None else {}
+        boxes = prediction.boxes
+        detections: list[dict[str, Any]] = []
+
+        if boxes is not None and boxes.cls is not None and boxes.conf is not None and boxes.xyxy is not None:
+            class_ids = boxes.cls.tolist()
+            confidences = boxes.conf.tolist()
+            coordinates = boxes.xyxy.tolist()
+            for class_id, confidence, coord in zip(class_ids, confidences, coordinates):
+                label = self._label_for_class(names, int(class_id))
+                confidence_value = float(confidence)
+                if not self._should_keep_detection(label=label, confidence=confidence_value):
+                    continue
+                detections.append(
+                    {
+                        "label": label,
+                        "confidence": confidence_value,
+                        "box": [float(value) for value in coord],
+                    }
+                )
+
+        return detections, names
+
+    def _live_history_payload(self, history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        cleaned: list[dict[str, Any]] = []
+        for incident in history:
+            payload = {key: value for key, value in incident.items() if not key.startswith("_")}
+            cleaned.append(payload)
+        return cleaned
+
+    def analyze_live_frame(self, frame) -> dict[str, Any]:
+        self.apply_runtime_settings(get_ai_settings())
+        state = self._ensure_live_session()
+        timestamp_seconds = max(0.0, time.perf_counter() - float(state.get("started_at") or time.perf_counter()))
+        clock_timestamp = self._format_clock_timestamp()
+        reviewed_frames = int(state.get("reviewed_frames") or 0) + 1
+        state["reviewed_frames"] = reviewed_frames
+
+        detections, _ = self._predict_detections(frame)
+        person_detections = [item for item in detections if item["label"] == "person"]
+        phone_detections = [item for item in detections if item["label"] in {"cell phone", "mobile phone"}]
+
+        mediapipe_status = self._mediapipe_status()
+        mediapipe_payload = {
+            "available": False,
+            "features": {},
+            "signals": {
+                "face_count": 0,
+                "head_pose_alert": False,
+                "head_pose_strong": False,
+                "head_pose_strength": "none",
+                "gaze_alert": False,
+                "gaze_baseline_ready": False,
+                "gaze_baseline_samples": 0,
+                "hand_phone_alert": False,
+                "face_missing": False,
+            },
+            "message": mediapipe_status.get("message", "MediaPipe unavailable."),
+        }
+        if mediapipe_status.get("enabled") and self.mediapipe_feature_service is not None:
+            # Live test needs fresh head/gaze signals on each submitted webcam frame.
+            state["cached_mediapipe_payload"] = self.mediapipe_feature_service.extract(
+                frame_bgr=frame,
+                yolo_detections=detections,
+            )
+            if state.get("cached_mediapipe_payload") is not None:
+                mediapipe_payload = state["cached_mediapipe_payload"]
+
+        mediapipe_features = mediapipe_payload.get("features", {})
+        mediapipe_signals = mediapipe_payload.get("signals", {})
+        face_recognition_status = self._face_recognition_status()
+        frame_face_matches: list[dict[str, Any]] = []
+        frame_identity: dict[str, Any] | None = None
+        incident_identity = self._get_cached_identity(
+            state.get("cached_face_identity"),
+            int(state.get("cached_face_identity_age") or 0),
+        )
+        if face_recognition_status.get("enabled") and self.face_recognition_service is not None:
+            if self._should_refresh_face_identity(
+                reviewed_frames=reviewed_frames,
+                cached_identity=state.get("cached_face_identity"),
+                cached_identity_age=int(state.get("cached_face_identity_age") or 0),
+                person_detections=person_detections,
+                mediapipe_signals=mediapipe_signals,
+            ):
+                frame_face_matches = self.face_recognition_service.identify_faces(frame_bgr=frame)
+                frame_identity = self.face_recognition_service.select_primary_identity(frame_face_matches)
+                if frame_identity is not None:
+                    state["cached_face_identity"] = dict(frame_identity)
+                    state["cached_face_identity_age"] = 0
+                    incident_identity = state["cached_face_identity"]
+                else:
+                    state["cached_face_identity_age"] = int(state.get("cached_face_identity_age") or 0) + 1
+                    incident_identity = self._get_cached_identity(
+                        state.get("cached_face_identity"),
+                        int(state.get("cached_face_identity_age") or 0),
+                    )
+            elif state.get("cached_face_identity") is not None:
+                state["cached_face_identity_age"] = int(state.get("cached_face_identity_age") or 0) + 1
+                incident_identity = self._get_cached_identity(
+                    state.get("cached_face_identity"),
+                    int(state.get("cached_face_identity_age") or 0),
+                )
+
+            if incident_identity is None:
+                state["cached_face_identity"] = None
+
+        incidents: list[dict[str, Any]] = []
+        last_incident_time = state["last_incident_time"]
+        signal_streaks = state["signal_streaks"]
+
+        previous_multiple_people_streak = signal_streaks.get("multiple_people", 0)
+        multiple_people_streak = self._advance_streak(
+            signal_streaks,
+            "multiple_people",
+            len(person_detections) > 1,
+        )
+        if (
+            self._crossed_streak_threshold(
+                previous_multiple_people_streak,
+                multiple_people_streak,
+                self._event_required_streak("multiple_people"),
+            )
+            and timestamp_seconds - last_incident_time.get("multiple_people", -999.0)
+            >= self._event_cooldown_seconds("multiple_people")
+        ):
+            incidents.append(
+                self._incident_with_identity(
+                    {
+                        "time": clock_timestamp,
+                        "time_seconds": round(timestamp_seconds, 2),
+                        "label": "Phat hien nhieu nguoi",
+                        "confidence": f"{max(item['confidence'] for item in person_detections) * 100:.0f}%",
+                        "risk": "high",
+                        "event_type": "multiple_people",
+                        "snapshot_url": self._encode_live_snapshot(frame, person_detections),
+                    },
+                    identity=incident_identity,
+                )
+            )
+            last_incident_time["multiple_people"] = timestamp_seconds
+
+        previous_phone_streak = signal_streaks.get("cell_phone", 0)
+        phone_streak = self._advance_streak(
+            signal_streaks,
+            "cell_phone",
+            bool(phone_detections),
+        )
+        strong_phone_signal = self._phone_signal_is_strong(
+            phone_detections=phone_detections,
+            frame_shape=frame.shape[:2],
+        )
+        if (
+            (
+                self._crossed_streak_threshold(
+                    previous_phone_streak,
+                    phone_streak,
+                    self._event_required_streak("cell_phone"),
+                )
+                or strong_phone_signal
+            )
+            and timestamp_seconds - last_incident_time.get("cell_phone", -999.0)
+            >= self._event_cooldown_seconds("cell_phone")
+        ):
+            incidents.append(
+                self._incident_with_identity(
+                    {
+                        "time": clock_timestamp,
+                        "time_seconds": round(timestamp_seconds, 2),
+                        "label": "Su dung dien thoai",
+                        "confidence": f"{max(item['confidence'] for item in phone_detections) * 100:.0f}%",
+                        "risk": "high",
+                        "event_type": "cell_phone",
+                        "snapshot_url": self._encode_live_snapshot(frame, phone_detections),
+                    },
+                    identity=incident_identity,
+                )
+            )
+            last_incident_time["cell_phone"] = timestamp_seconds
+
+        previous_head_pose_streak = signal_streaks.get("head_pose", 0)
+        head_pose_streak = self._advance_streak(
+            signal_streaks,
+            "head_pose",
+            bool(
+                mediapipe_signals.get("head_pose_strong")
+                and mediapipe_features.get("head_pose") in {"left", "right", "down"}
+                and not phone_detections
+                and len(person_detections) <= 1
+            )
+            or bool(
+                mediapipe_signals.get("head_pose_alert")
+                and mediapipe_features.get("head_pose") == "up"
+                and not phone_detections
+                and len(person_detections) <= 1
+            ),
+        )
+        if (
+            self._crossed_streak_threshold(
+                previous_head_pose_streak,
+                head_pose_streak,
+                self._event_required_streak("head_pose"),
+            )
+            and timestamp_seconds - last_incident_time.get("head_pose", -999.0)
+            >= self._event_cooldown_seconds("head_pose")
+        ):
+            head_pose = mediapipe_features.get("head_pose") or "bat thuong"
+            head_pose_strength = mediapipe_signals.get("head_pose_strength", "none")
+            incidents.append(
+                self._incident_with_identity(
+                    {
+                        "time": clock_timestamp,
+                        "time_seconds": round(timestamp_seconds, 2),
+                        "label": self._head_pose_label(head_pose),
+                        "confidence": "92%" if mediapipe_signals.get("head_pose_strong") else "82%",
+                        "risk": "medium",
+                        "event_type": "head_pose",
+                        "snapshot_url": self._encode_live_snapshot(frame, person_detections or detections[:1]),
+                        "details": self._head_pose_details(head_pose, head_pose_strength),
+                    },
+                    identity=incident_identity,
+                )
+            )
+            last_incident_time["head_pose"] = timestamp_seconds
+
+        previous_gaze_streak = signal_streaks.get("gaze", 0)
+        gaze_streak = self._advance_streak(
+            signal_streaks,
+            "gaze",
+            self._is_gaze_signal_active(
+                timestamp_seconds=timestamp_seconds,
+                mediapipe_features=mediapipe_features,
+                mediapipe_signals=mediapipe_signals,
+                phone_detections=phone_detections,
+            ),
+        )
+        if (
+            self._crossed_streak_threshold(
+                previous_gaze_streak,
+                gaze_streak,
+                self._event_required_streak("gaze"),
+            )
+            and timestamp_seconds - last_incident_time.get("gaze", -999.0)
+            >= self._event_cooldown_seconds("gaze")
+        ):
+            direction = mediapipe_features.get("gaze_direction") or "unknown"
+            incidents.append(
+                self._incident_with_identity(
+                    {
+                        "time": clock_timestamp,
+                        "time_seconds": round(timestamp_seconds, 2),
+                        "label": self._gaze_label(direction),
+                        "confidence": self._gaze_confidence(
+                            mediapipe_features=mediapipe_features,
+                            mediapipe_signals=mediapipe_signals,
+                            streak=gaze_streak,
+                        ),
+                        "risk": "medium",
+                        "event_type": "gaze",
+                        "snapshot_url": self._encode_live_snapshot(frame, person_detections or detections[:1]),
+                        "details": self._gaze_details(direction),
+                    },
+                    identity=incident_identity,
+                )
+            )
+            last_incident_time["gaze"] = timestamp_seconds
+
+        previous_face_missing_streak = signal_streaks.get("face_missing", 0)
+        face_missing_streak = self._advance_streak(
+            signal_streaks,
+            "face_missing",
+            self._is_face_missing_signal_active(
+                timestamp_seconds=timestamp_seconds,
+                mediapipe_signals=mediapipe_signals,
+                person_detections=person_detections,
+                frame_identity=frame_identity,
+                frame_face_matches=frame_face_matches,
+            ),
+        )
+        if (
+            self._crossed_streak_threshold(
+                previous_face_missing_streak,
+                face_missing_streak,
+                self._event_required_streak("face_missing"),
+            )
+            and timestamp_seconds - last_incident_time.get("face_missing", -999.0)
+            >= self._event_cooldown_seconds("face_missing")
+        ):
+            incidents.append(
+                self._incident_with_identity(
+                    {
+                        "time": clock_timestamp,
+                        "time_seconds": round(timestamp_seconds, 2),
+                        "label": "Vang mat khoi khung hinh",
+                        "confidence": "80%",
+                        "risk": "low",
+                        "event_type": "face_missing",
+                        "snapshot_url": self._encode_live_snapshot(frame, []),
+                    },
+                    identity=incident_identity,
+                )
+            )
+            last_incident_time["face_missing"] = timestamp_seconds
+
+        history = list(state.get("history") or [])
+        for incident in incidents:
+            item = dict(incident)
+            item["_emitted_at"] = timestamp_seconds
+            history.insert(0, item)
+        state["history"] = history[:10]
+
+        latest_alert_age = None
+        if state["history"]:
+            latest_alert_age = timestamp_seconds - float(state["history"][0].get("_emitted_at") or timestamp_seconds)
+        stage_state = "alert" if latest_alert_age is not None and latest_alert_age <= 2.4 else "normal"
+        stage_label = "Hanh vi nghi ngo gian lan" if stage_state == "alert" else "Binh thuong"
+
+        return {
+            "status": "success",
+            "stage_state": stage_state,
+            "stage_label": stage_label,
+            "incident_count": len(state["history"]),
+            "incidents": self._live_history_payload(state["history"]),
+            "new_incidents": self._live_history_payload(incidents),
+            "message": "Live frame analyzed.",
+        }
 
     def detect_from_video(self, video_path: str | Path) -> dict[str, Any]:
         self.apply_runtime_settings(get_ai_settings())

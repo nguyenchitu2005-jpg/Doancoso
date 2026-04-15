@@ -771,6 +771,21 @@ h3 {
   gap: 18px;
 }
 
+.live-test-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  border-radius: 20px;
+  background: rgba(9, 24, 44, 0.04);
+}
+
+.live-test-actions .panel-subtitle {
+  margin: 0;
+}
+
 .upload-form,
 .upload-list {
   display: grid;
@@ -909,6 +924,12 @@ h3 {
   min-height: clamp(420px, 62vh, 540px);
 }
 
+.video-stage.is-live {
+  padding: 0;
+  background: #0b111a;
+  min-height: clamp(420px, 62vh, 540px);
+}
+
 .stage-flag {
   position: absolute;
   z-index: 2;
@@ -937,6 +958,10 @@ h3 {
   height: 100%;
   object-fit: contain;
   background: #050a10;
+}
+
+.live-camera-player {
+  z-index: 1;
 }
 
 .signal-live {

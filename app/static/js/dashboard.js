@@ -544,15 +544,67 @@ if (clearSelectedFileButton && uploadFileInput) {
 }
 
 const reviewVideoPlayer = document.getElementById("review-video-player");
+const liveCameraPlayer = document.getElementById("live-camera-player");
+const reviewVideoStage = document.getElementById("review-video-stage");
+const stagePlaceholder = document.getElementById("review-stage-placeholder");
+const toggleLiveTestButton = document.getElementById("toggle-live-test-button");
+const liveTestFeedback = document.getElementById("live-test-feedback");
 const stageFlagText = document.getElementById("review-stage-flag-text");
 const stageFlag = document.querySelector(".stage-flag");
-const incidentCards = Array.from(document.querySelectorAll(".incident-card[data-incident-time]"));
+const incidentList = document.getElementById("incident-list");
+const initialIncidentMarkup = incidentList ? incidentList.innerHTML : "";
+let incidentCards = Array.from(document.querySelectorAll(".incident-card[data-incident-time]"));
 const incidentCountChip = document.getElementById("incident-count-chip");
 const defaultStageFlagText = "Binh thuong";
 const emptyStageFlagText = "Chua co video de hau kiem";
 const genericIncidentLabel = "Hanh vi nghi ngo gian lan";
+const liveCameraRequestText = "Dang xin quyen camera...";
+const liveCameraDeniedText = "Khong the bat camera de live test";
+const liveWaitingIncidentText = "Dang cho canh bao tu webcam.";
 const incidentLookbackSeconds = 0.35;
 const incidentDisplayWindowSeconds = 2.4;
+const liveFrameIntervalMs = 450;
+const liveFrameMaxWidth = 720;
+const liveCaptureCanvas = document.createElement("canvas");
+const liveCaptureContext = liveCaptureCanvas.getContext("2d");
+let liveModeStarted = false;
+let liveModeStarting = false;
+let liveStream = null;
+let livePollTimer = null;
+let livePollInFlight = false;
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;");
+}
+
+function refreshIncidentCards() {
+  incidentCards = Array.from(document.querySelectorAll(".incident-card[data-incident-time]"));
+}
+
+function setLiveTestFeedback(message, isError = false) {
+  if (!liveTestFeedback) {
+    return;
+  }
+  liveTestFeedback.textContent = message;
+  liveTestFeedback.style.color = isError ? "#b42318" : "";
+}
+
+function updateLiveToggleButton() {
+  if (!toggleLiveTestButton) {
+    return;
+  }
+  if (liveModeStarting) {
+    toggleLiveTestButton.disabled = true;
+    toggleLiveTestButton.textContent = "Dang bat live test...";
+    return;
+  }
+  toggleLiveTestButton.disabled = false;
+  toggleLiveTestButton.textContent = liveStream ? "Tat live test" : "Bat live test";
+}
 
 function findActiveIncident(currentTime) {
   if (!incidentCards.length) {
@@ -571,6 +623,46 @@ function setStageFlagState(isIncidentActive) {
   stageFlag.classList.toggle("is-normal", !isIncidentActive);
 }
 
+function setStageFlagText(label, isIncidentActive) {
+  setStageFlagState(isIncidentActive);
+  if (stageFlagText) {
+    stageFlagText.textContent = label;
+  }
+}
+
+function renderIncidentHistory(incidents, emptyText) {
+  if (!incidentList) {
+    return;
+  }
+
+  if (!Array.isArray(incidents) || !incidents.length) {
+    incidentList.innerHTML = `
+      <article class="incident-card incident-card-empty">
+        <small>00:00:00</small>
+        <p>${escapeHtml(emptyText)}</p>
+      </article>
+    `;
+    refreshIncidentCards();
+    return;
+  }
+
+  incidentList.innerHTML = incidents
+    .map((incident) => {
+      const snapshotMarkup = incident.snapshot_url
+        ? `<img class="incident-thumb" src="${incident.snapshot_url}" alt="Snapshot vi pham tai ${escapeHtml(incident.time)}">`
+        : "";
+      return `
+        <article class="incident-card" data-incident-time="${Number(incident.time_seconds || 0)}" data-incident-label="${genericIncidentLabel}">
+          <small>${escapeHtml(incident.time || "00:00:00")}</small>
+          <p>${genericIncidentLabel}</p>
+          ${snapshotMarkup}
+        </article>
+      `;
+    })
+    .join("");
+  refreshIncidentCards();
+}
+
 function setActiveIncident(currentTime) {
   const activeCard = findActiveIncident(currentTime);
   incidentCards.forEach((card) => card.classList.toggle("is-active", card === activeCard));
@@ -578,18 +670,16 @@ function setActiveIncident(currentTime) {
     return;
   }
   if (activeCard) {
-    setStageFlagState(true);
-    stageFlagText.textContent = activeCard.dataset.incidentLabel || genericIncidentLabel;
+    setStageFlagText(activeCard.dataset.incidentLabel || genericIncidentLabel, true);
     return;
   }
-  setStageFlagState(false);
-  stageFlagText.textContent = reviewPayload.video_url ? defaultStageFlagText : emptyStageFlagText;
+  setStageFlagText(reviewPayload.video_url ? defaultStageFlagText : emptyStageFlagText, false);
 }
 
 function bindIncidentCardNavigation() {
   incidentCards.forEach((card) => {
     card.addEventListener("click", () => {
-      if (!reviewVideoPlayer) {
+      if (!reviewVideoPlayer || liveStream) {
         return;
       }
       const marker = Number(card.dataset.incidentTime || 0);
@@ -601,14 +691,13 @@ function bindIncidentCardNavigation() {
 }
 
 function initializeReviewTimeline() {
+  refreshIncidentCards();
   if (incidentCountChip) {
     incidentCountChip.textContent = `${reviewPayload.incidents?.length || 0} su co`;
   }
 
   if (!incidentCards.length) {
-    if (stageFlagText) {
-      stageFlagText.textContent = reviewPayload.video_url ? defaultStageFlagText : emptyStageFlagText;
-    }
+    setStageFlagText(reviewPayload.video_url ? defaultStageFlagText : emptyStageFlagText, false);
     return;
   }
 
@@ -622,12 +711,209 @@ function initializeReviewTimeline() {
   }
 }
 
+function showLiveCameraStage() {
+  if (reviewVideoStage) {
+    reviewVideoStage.classList.add("has-video", "is-live");
+  }
+  if (reviewVideoPlayer) {
+    reviewVideoPlayer.pause();
+    reviewVideoPlayer.hidden = true;
+  }
+  if (stagePlaceholder) {
+    stagePlaceholder.hidden = true;
+  }
+  if (liveCameraPlayer) {
+    liveCameraPlayer.hidden = false;
+  }
+}
+
+function restoreRecordedStage() {
+  if (reviewVideoStage) {
+    reviewVideoStage.classList.remove("is-live");
+    if (!reviewPayload.video_url) {
+      reviewVideoStage.classList.remove("has-video");
+    }
+  }
+  if (reviewVideoPlayer) {
+    reviewVideoPlayer.hidden = false;
+  }
+  if (stagePlaceholder) {
+    stagePlaceholder.hidden = false;
+  }
+  if (liveCameraPlayer) {
+    liveCameraPlayer.hidden = true;
+  }
+}
+
+function restoreRecordedIncidentHistory() {
+  if (!incidentList) {
+    return;
+  }
+  incidentList.innerHTML = initialIncidentMarkup;
+  refreshIncidentCards();
+  if (incidentCountChip) {
+    incidentCountChip.textContent = `${reviewPayload.incidents?.length || 0} su co`;
+  }
+  if (reviewPayload.video_url) {
+    bindIncidentCardNavigation();
+    setActiveIncident(reviewVideoPlayer?.currentTime || 0);
+  }
+}
+
+function stopLiveReviewMode({ restoreState = true } = {}) {
+  liveModeStarting = false;
+  if (livePollTimer) {
+    window.clearInterval(livePollTimer);
+    livePollTimer = null;
+  }
+  livePollInFlight = false;
+  if (liveStream) {
+    liveStream.getTracks().forEach((track) => track.stop());
+    liveStream = null;
+  }
+  if (liveCameraPlayer) {
+    liveCameraPlayer.pause();
+    liveCameraPlayer.srcObject = null;
+  }
+  liveModeStarted = false;
+  if (restoreState) {
+    restoreRecordedStage();
+    restoreRecordedIncidentHistory();
+    setStageFlagText(reviewPayload.video_url ? defaultStageFlagText : emptyStageFlagText, false);
+  }
+  updateLiveToggleButton();
+}
+
+function applyLiveReviewPayload(payload) {
+  if (incidentCountChip) {
+    incidentCountChip.textContent = `${Number(payload?.incident_count || 0)} su co`;
+  }
+  renderIncidentHistory(payload?.incidents || [], liveWaitingIncidentText);
+  if (payload?.stage_state === "alert") {
+    setStageFlagText(payload.stage_label || genericIncidentLabel, true);
+  } else {
+    setStageFlagText(defaultStageFlagText, false);
+  }
+}
+
+async function postLiveFrame(blob) {
+  const formData = new FormData();
+  formData.append("frame", blob, "live-frame.jpg");
+  const response = await fetch("/review/live/frame", {
+    method: "POST",
+    body: formData,
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload?.message || "Khong the phan tich frame webcam.");
+  }
+  return payload;
+}
+
+async function sendLiveFrame() {
+  if (
+    !liveStream
+    || !liveCameraPlayer
+    || livePollInFlight
+    || liveCameraPlayer.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+    || !liveCaptureContext
+  ) {
+    return;
+  }
+
+  const sourceWidth = liveCameraPlayer.videoWidth || 0;
+  const sourceHeight = liveCameraPlayer.videoHeight || 0;
+  if (!sourceWidth || !sourceHeight) {
+    return;
+  }
+
+  livePollInFlight = true;
+  try {
+    const scale = Math.min(1, liveFrameMaxWidth / sourceWidth);
+    liveCaptureCanvas.width = Math.max(1, Math.round(sourceWidth * scale));
+    liveCaptureCanvas.height = Math.max(1, Math.round(sourceHeight * scale));
+    liveCaptureContext.drawImage(liveCameraPlayer, 0, 0, liveCaptureCanvas.width, liveCaptureCanvas.height);
+    const blob = await new Promise((resolve) => {
+      liveCaptureCanvas.toBlob(resolve, "image/jpeg", 0.82);
+    });
+    if (!blob) {
+      return;
+    }
+    const payload = await postLiveFrame(blob);
+    applyLiveReviewPayload(payload);
+  } catch (error) {
+    setStageFlagText(error.message || liveCameraDeniedText, false);
+  } finally {
+    livePollInFlight = false;
+  }
+}
+
+function startLivePolling() {
+  if (livePollTimer) {
+    return;
+  }
+  sendLiveFrame();
+  livePollTimer = window.setInterval(() => {
+    sendLiveFrame();
+  }, liveFrameIntervalMs);
+}
+
+async function ensureLiveReviewMode() {
+  if (liveStream || liveModeStarting || !liveCameraPlayer) {
+    return;
+  }
+  liveModeStarting = true;
+  updateLiveToggleButton();
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    liveModeStarting = false;
+    updateLiveToggleButton();
+    setLiveTestFeedback("Trinh duyet nay khong ho tro bat webcam live test.", true);
+    setStageFlagText(liveCameraDeniedText, false);
+    return;
+  }
+
+  setStageFlagText(liveCameraRequestText, false);
+  renderIncidentHistory([], liveWaitingIncidentText);
+  setLiveTestFeedback("Dang bat webcam va khoi tao live test...");
+
+  try {
+    const startResponse = await fetch("/review/live/start", { method: "POST" });
+    if (!startResponse.ok) {
+      const payload = await startResponse.json();
+      throw new Error(payload?.message || "Khong the khoi tao live test.");
+    }
+
+    liveStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: "user",
+      },
+      audio: false,
+    });
+    liveCameraPlayer.srcObject = liveStream;
+    await liveCameraPlayer.play();
+    showLiveCameraStage();
+    liveModeStarted = true;
+    liveModeStarting = false;
+    updateLiveToggleButton();
+    setStageFlagText(defaultStageFlagText, false);
+    setLiveTestFeedback("Live test dang bat. Webcam se duoc phan tich dinh ky de hien canh bao.");
+    startLivePolling();
+  } catch (error) {
+    stopLiveReviewMode();
+    setLiveTestFeedback(error.message || liveCameraDeniedText, true);
+    setStageFlagText(error.message || liveCameraDeniedText, false);
+  }
+}
+
 activateTab(appShell?.dataset.initialTab || "overview");
 syncStudentTeacherReview();
 renderStudents();
 initializeReviewTimeline();
 syncSelectedFileState();
 renderTeacherReview();
+updateLiveToggleButton();
+setLiveTestFeedback("Bat webcam de test canh bao thoi gian thuc trong khung hinh nay.");
 
 if (confirmFraudButton) {
   confirmFraudButton.addEventListener("click", () => {
@@ -640,3 +926,18 @@ if (dismissReviewButton) {
     submitTeacherReviewDecision("dismissed");
   });
 }
+
+if (toggleLiveTestButton) {
+  toggleLiveTestButton.addEventListener("click", () => {
+    if (liveStream || liveModeStarting) {
+      stopLiveReviewMode();
+      setLiveTestFeedback("Da tat live test. Ban co the bat lai bat cu luc nao.");
+      return;
+    }
+    ensureLiveReviewMode();
+  });
+}
+
+window.addEventListener("beforeunload", () => {
+  stopLiveReviewMode({ restoreState: false });
+});
