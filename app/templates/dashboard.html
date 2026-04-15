@@ -401,13 +401,12 @@
               </div>
               <div id="incident-list" class="incident-list">
                 {% for incident in latest_review.incidents %}
-                  <article class="incident-card" data-incident-time="{{ incident.time_seconds | default(0) }}" data-incident-label="{{ incident.label }}">
+                  <article class="incident-card" data-incident-time="{{ incident.time_seconds | default(0) }}" data-incident-label="Hanh vi nghi ngo gian lan">
                     <small>{{ incident.time }}</small>
-                    <p>{{ incident.label }}</p>
+                    <p>Hanh vi nghi ngo gian lan</p>
                     {% if incident.snapshot_url %}
                       <img class="incident-thumb" src="{{ incident.snapshot_url }}" alt="Snapshot vi pham tai {{ incident.time }}">
                     {% endif %}
-                    <span class="chip risk-{{ incident.risk }}">Độ tin cậy {{ incident.confidence }}</span>
                   </article>
                 {% else %}
                   <article class="incident-card incident-card-empty">
@@ -478,27 +477,32 @@
               <div class="panel-header">
                 <div>
                   <p class="panel-title">Xu hướng vi phạm (24h qua)</p>
-                  <p class="panel-subtitle">Dữ liệu hậu kiểm được chia theo các mốc giờ cao điểm.</p>
+                  <p class="panel-subtitle">Dữ liệu hậu kiểm được tổng hợp từ tất cả các lần phân tích trong 24 giờ gần nhất.</p>
                 </div>
               </div>
               <div class="trend-bars" aria-hidden="true">
-                <div><span style="height: 28%"></span><small>08:00</small></div>
-                <div><span style="height: 45%"></span><small>12:00</small></div>
-                <div><span class="highlight" style="height: 62%"></span><small>14:00</small></div>
-                <div><span style="height: 34%"></span><small>16:00</small></div>
-                <div><span style="height: 24%"></span><small>20:00</small></div>
-                <div><span style="height: 51%"></span><small>Hiện tại</small></div>
+                {% for point in violation_trend %}
+                  <div class="trend-bar-group">
+                    <strong class="trend-count">{% if point.count > 0 %}{{ point.count }}{% endif %}</strong>
+                    <span
+                      title="{{ point.tooltip }}"
+                      class="trend-bar{% if point.highlight %} is-peak{% endif %}{% if point.current %} is-current{% endif %}"
+                      style="height: {{ point.height }}%"
+                    ></span>
+                    <small>{{ point.label }}</small>
+                  </div>
+                {% endfor %}
               </div>
             </article>
 
             <article class="system-status-panel">
               <p class="panel-title">Tình trạng AI Proctor</p>
-              <div class="system-metric"><span>Độ trễ hệ thống</span><strong>145ms</strong></div>
-              <div class="system-metric"><span>Xử lý khung hình</span><strong>60 FPS</strong></div>
-              <div class="system-metric"><span>Face API Accuracy</span><strong>99.8%</strong></div>
+              <div class="system-metric"><span>Độ trễ hệ thống</span><strong>{{ system_status.latency_label }}</strong></div>
+              <div class="system-metric"><span>Xử lý khung hình</span><strong>{{ system_status.frame_fps_label }}</strong></div>
+              <div class="system-metric"><span>Face Recognition</span><strong>{{ system_status.face_engine_label }}</strong></div>
               <div class="system-divider"></div>
-              <p class="system-online">System Online</p>
-              <small>Uptime: 14 ngày, 3 giờ, 22 phút</small>
+              <p class="system-online">{{ system_status.state_label }}</p>
+              <small>{{ system_status.updated_label }}</small>
             </article>
           </div>
         </section>
@@ -605,5 +609,5 @@
 {% block scripts %}
   <script id="dashboard-data" type="application/json">{{ dashboard | tojson }}</script>
   <script id="review-data" type="application/json">{{ latest_review | tojson }}</script>
-  <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260415b"></script>
+  <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260415g"></script>
 {% endblock %}

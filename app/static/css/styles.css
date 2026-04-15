@@ -925,6 +925,11 @@ h3 {
   font-weight: 700;
 }
 
+.stage-flag.is-normal {
+  color: #eef9f2;
+  background: rgba(9, 79, 44, 0.88);
+}
+
 .review-video-player {
   position: absolute;
   inset: 0;
@@ -940,6 +945,11 @@ h3 {
   border-radius: 50%;
   background: #ff5a53;
   box-shadow: 0 0 0 10px rgba(255, 90, 83, 0.12);
+}
+
+.stage-flag.is-normal .signal-live {
+  background: #43d17e;
+  box-shadow: 0 0 0 10px rgba(67, 209, 126, 0.12);
 }
 
 .stage-scene {
@@ -1345,14 +1355,42 @@ h3 {
   align-items: end;
 }
 
-.trend-bars div {
+.trend-bar-group {
   display: grid;
   justify-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
-.trend-bars .highlight {
+.trend-count {
+  min-height: 1.2rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #5b6b80;
+}
+
+.trend-bar {
+  width: 100%;
+  min-height: 4px;
+  border-radius: 999px 999px 16px 16px;
+  background: linear-gradient(180deg, rgba(97, 122, 155, 0.22), rgba(38, 60, 92, 0.72));
+  transition: transform 140ms ease, filter 140ms ease;
+}
+
+.trend-bar-group:hover .trend-bar {
+  transform: translateY(-2px);
+  filter: brightness(1.05);
+}
+
+.trend-bar.is-current {
+  background: linear-gradient(180deg, rgba(72, 167, 255, 0.34), rgba(0, 89, 179, 0.82));
+}
+
+.trend-bar.is-peak {
   background: linear-gradient(180deg, rgba(255, 90, 83, 0.34), rgba(96, 0, 7, 0.82));
+}
+
+.trend-bar.is-peak.is-current {
+  background: linear-gradient(180deg, rgba(255, 180, 88, 0.4), rgba(184, 74, 0, 0.84));
 }
 
 .system-status-panel {

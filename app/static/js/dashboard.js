@@ -86,8 +86,10 @@ function syncStudentTeacherReview() {
   const reviewedCandidateIds = getReviewedCandidateIds();
   allStudents.forEach((student) => {
     const candidateId = String(student?.candidate_id || "").trim();
-    const nextStatus = reviewedCandidateIds.has(candidateId) ? reviewPayload.teacher_review?.status : "pending";
-    student.teacher_review = normalizeTeacherReview({ teacher_review: { status: nextStatus } });
+    if (!reviewedCandidateIds.has(candidateId)) {
+      return;
+    }
+    student.teacher_review = normalizeTeacherReview({ teacher_review: reviewPayload.teacher_review || {} });
   });
 }
 
@@ -543,23 +545,30 @@ if (clearSelectedFileButton && uploadFileInput) {
 
 const reviewVideoPlayer = document.getElementById("review-video-player");
 const stageFlagText = document.getElementById("review-stage-flag-text");
+const stageFlag = document.querySelector(".stage-flag");
 const incidentCards = Array.from(document.querySelectorAll(".incident-card[data-incident-time]"));
 const incidentCountChip = document.getElementById("incident-count-chip");
-const defaultStageFlagText = "Dang phat lai video hau kiem";
+const defaultStageFlagText = "Binh thuong";
 const emptyStageFlagText = "Chua co video de hau kiem";
+const genericIncidentLabel = "Hanh vi nghi ngo gian lan";
+const incidentLookbackSeconds = 0.35;
+const incidentDisplayWindowSeconds = 2.4;
 
 function findActiveIncident(currentTime) {
   if (!incidentCards.length) {
     return null;
   }
-  let activeCard = null;
-  incidentCards.forEach((card) => {
+  return incidentCards.find((card) => {
     const marker = Number(card.dataset.incidentTime || 0);
-    if (marker <= currentTime) {
-      activeCard = card;
-    }
-  });
-  return activeCard;
+    return currentTime >= marker - incidentLookbackSeconds && currentTime <= marker + incidentDisplayWindowSeconds;
+  }) || null;
+}
+
+function setStageFlagState(isIncidentActive) {
+  if (!stageFlag) {
+    return;
+  }
+  stageFlag.classList.toggle("is-normal", !isIncidentActive);
 }
 
 function setActiveIncident(currentTime) {
@@ -569,9 +578,11 @@ function setActiveIncident(currentTime) {
     return;
   }
   if (activeCard) {
-    stageFlagText.textContent = activeCard.dataset.incidentLabel || "Dang theo doi vi pham";
+    setStageFlagState(true);
+    stageFlagText.textContent = activeCard.dataset.incidentLabel || genericIncidentLabel;
     return;
   }
+  setStageFlagState(false);
   stageFlagText.textContent = reviewPayload.video_url ? defaultStageFlagText : emptyStageFlagText;
 }
 

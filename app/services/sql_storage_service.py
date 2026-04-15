@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -183,6 +183,100 @@ class SQLStorageService:
 
         return rollups
 
+    def _candidate_profiles_from_result(self, result_payload: dict[str, Any]) -> dict[str, dict[str, str]]:
+        summary = result_payload.get("summary", {}) or {}
+        students_report = result_payload.get("students_report") or summary.get("students_report") or []
+        primary_candidate = result_payload.get("primary_candidate") or summary.get("primary_candidate") or {}
+        profiles: dict[str, dict[str, str]] = {}
+
+        for student in students_report:
+            if not isinstance(student, dict):
+                continue
+            candidate_id = self._normalize_candidate_id(student.get("candidate_id"))
+            if not candidate_id:
+                continue
+            profiles[candidate_id] = {
+                "candidate_id": candidate_id,
+                "candidate_name": str(student.get("name") or candidate_id),
+                "candidate_email": str(student.get("email") or ""),
+                "candidate_room": str(student.get("room") or ""),
+            }
+
+        if isinstance(primary_candidate, dict):
+            candidate_id = self._normalize_candidate_id(primary_candidate.get("candidate_id"))
+            if candidate_id and candidate_id not in profiles:
+                profiles[candidate_id] = {
+                    "candidate_id": candidate_id,
+                    "candidate_name": str(primary_candidate.get("name") or candidate_id),
+                    "candidate_email": str(primary_candidate.get("email") or ""),
+                    "candidate_room": str(primary_candidate.get("room") or ""),
+                }
+
+        return profiles
+
+    def _infer_review_candidate_identity(self, result_payload: dict[str, Any]) -> dict[str, str] | None:
+        profiles = self._candidate_profiles_from_result(result_payload)
+        if len(profiles) == 1:
+            return next(iter(profiles.values()))
+
+        summary = result_payload.get("summary", {}) or {}
+        recognized_candidates = int(summary.get("recognized_candidates") or 0)
+        primary_candidate = result_payload.get("primary_candidate") or summary.get("primary_candidate") or {}
+        candidate_id = self._normalize_candidate_id(primary_candidate.get("candidate_id"))
+        if candidate_id and recognized_candidates == 1:
+            profile = profiles.get(candidate_id)
+            if profile is not None:
+                return profile
+            return {
+                "candidate_id": candidate_id,
+                "candidate_name": str(primary_candidate.get("name") or candidate_id),
+                "candidate_email": str(primary_candidate.get("email") or ""),
+                "candidate_room": str(primary_candidate.get("room") or ""),
+            }
+
+        return None
+
+    def _enrich_incidents_with_candidate_context(
+        self,
+        incidents: list[dict[str, Any]],
+        result_payload: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if not incidents:
+            return []
+
+        profiles = self._candidate_profiles_from_result(result_payload)
+        fallback_identity = self._infer_review_candidate_identity(result_payload)
+        enriched_incidents: list[dict[str, Any]] = []
+
+        for incident in incidents:
+            if not isinstance(incident, dict):
+                continue
+
+            enriched = dict(incident)
+            candidate_id = self._normalize_candidate_id(enriched.get("candidate_id"))
+            profile = profiles.get(candidate_id) if candidate_id else None
+
+            if profile is None and candidate_id:
+                profile = {
+                    "candidate_id": candidate_id,
+                    "candidate_name": str(enriched.get("candidate_name") or candidate_id),
+                    "candidate_email": str(enriched.get("candidate_email") or ""),
+                    "candidate_room": str(enriched.get("candidate_room") or ""),
+                }
+
+            if profile is None:
+                profile = fallback_identity
+
+            if profile is not None:
+                enriched["candidate_id"] = profile["candidate_id"]
+                enriched["candidate_name"] = str(enriched.get("candidate_name") or profile["candidate_name"])
+                enriched["candidate_email"] = str(enriched.get("candidate_email") or profile["candidate_email"])
+                enriched["candidate_room"] = str(enriched.get("candidate_room") or profile["candidate_room"])
+
+            enriched_incidents.append(enriched)
+
+        return enriched_incidents
+
     def _build_review_payload(self, review, incidents: list[dict[str, Any]]) -> dict[str, Any]:
         summary = self._parse_json_text(review.summary_json)
         return {
@@ -190,6 +284,7 @@ class SQLStorageService:
             "video_hash": self._normalize_video_hash(getattr(review, "video_hash", None)),
             "summary": summary,
             "students_report": summary.get("students_report", []),
+            "primary_candidate": summary.get("primary_candidate"),
             "incidents": incidents,
         }
 
@@ -385,6 +480,66 @@ class SQLStorageService:
                 )
             )
 
+    def _sync_candidate_history_last_review_refs(self, session, candidate_ids: set[str] | None = None) -> int:
+        if select is None or CandidateHistory is None or ReviewIncident is None or ReviewResult is None:
+            return 0
+
+        normalized_candidate_ids = {
+            self._normalize_candidate_id(candidate_id)
+            for candidate_id in (candidate_ids or set())
+            if self._normalize_candidate_id(candidate_id)
+        }
+
+        statement = (
+            select(
+                ReviewIncident.candidate_id,
+                ReviewIncident.review_id,
+                ReviewResult.created_at,
+            )
+            .join(ReviewResult, ReviewResult.id == ReviewIncident.review_id)
+            .order_by(
+                ReviewIncident.candidate_id.asc(),
+                ReviewResult.created_at.desc(),
+                ReviewResult.id.desc(),
+            )
+        )
+        if normalized_candidate_ids:
+            statement = statement.where(ReviewIncident.candidate_id.in_(normalized_candidate_ids))
+
+        latest_review_by_candidate_id: dict[str, tuple[int, datetime | None]] = {}
+        for candidate_id, review_id, created_at in session.execute(statement).all():
+            normalized_candidate_id = self._normalize_candidate_id(candidate_id)
+            if not normalized_candidate_id or review_id is None:
+                continue
+            if normalized_candidate_id in latest_review_by_candidate_id:
+                continue
+            latest_review_by_candidate_id[normalized_candidate_id] = (int(review_id), created_at)
+
+        if not latest_review_by_candidate_id:
+            return 0
+
+        histories = session.scalars(
+            select(CandidateHistory).where(CandidateHistory.candidate_id.in_(list(latest_review_by_candidate_id.keys())))
+        ).all()
+
+        updated_count = 0
+        for history in histories:
+            latest_review = latest_review_by_candidate_id.get(history.candidate_id)
+            if latest_review is None:
+                continue
+            latest_review_id, latest_created_at = latest_review
+            changed = False
+            if int(history.last_review_id or 0) != latest_review_id:
+                history.last_review_id = latest_review_id
+                changed = True
+            if latest_created_at is not None and history.last_seen_at != latest_created_at:
+                history.last_seen_at = latest_created_at
+                changed = True
+            if changed:
+                updated_count += 1
+
+        return updated_count
+
     def save_review_result(self, result_payload: dict[str, Any], upload_info: dict[str, Any] | None = None) -> int | None:
         if (
             not self.is_available()
@@ -399,7 +554,10 @@ class SQLStorageService:
         video_path = str(result_payload.get("video_path") or "")
         summary = result_payload.get("summary", {}) or {}
         engines = result_payload.get("engines", {}) or {}
-        incidents = result_payload.get("incidents", []) or []
+        incidents = self._enrich_incidents_with_candidate_context(
+            result_payload.get("incidents", []) or [],
+            result_payload=result_payload,
+        )
         candidate_rollups = self._build_candidate_rollups(result_payload)
         video_hash = self._resolve_video_hash(video_path=video_path, result_payload=result_payload, upload_info=upload_info)
         teacher_review = result_payload.get("teacher_review", {}) or {}
@@ -431,6 +589,10 @@ class SQLStorageService:
                 for incident in incidents:
                     event = ReviewIncident(
                         review_id=int(review.id),
+                        candidate_id=self._normalize_candidate_id(incident.get("candidate_id")) or None,
+                        candidate_name=str(incident.get("candidate_name") or "") or None,
+                        candidate_email=str(incident.get("candidate_email") or "") or None,
+                        candidate_room=str(incident.get("candidate_room") or "") or None,
                         time_label=str(incident.get("time") or ""),
                         time_seconds=float(incident["time_seconds"]) if incident.get("time_seconds") is not None else None,
                         label=str(incident.get("label") or ""),
@@ -443,6 +605,11 @@ class SQLStorageService:
                     session.add(event)
 
                 if is_duplicate_video:
+                    session.flush()
+                    self._sync_candidate_history_last_review_refs(
+                        session=session,
+                        candidate_ids=set(candidate_rollups.keys()),
+                    )
                     session.flush()
                     return int(review.id)
 
@@ -595,6 +762,29 @@ class SQLStorageService:
         except (SQLAlchemyError, RuntimeError):
             return []
 
+    def list_recent_incident_timestamps(self, hours: int = 24) -> list[str]:
+        if not self.is_available() or select is None or ReviewResult is None or ReviewIncident is None:
+            return []
+
+        lookback_hours = max(1, int(hours or 24))
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+
+        try:
+            with db_session_manager.session_scope() as session:
+                rows = session.execute(
+                    select(ReviewResult.created_at)
+                    .join(ReviewIncident, ReviewIncident.review_id == ReviewResult.id)
+                    .where(ReviewResult.created_at >= cutoff)
+                    .order_by(ReviewResult.created_at.asc(), ReviewIncident.id.asc())
+                ).all()
+                return [
+                    self._normalize_created_at(created_at)
+                    for (created_at,) in rows
+                    if created_at is not None
+                ]
+        except (SQLAlchemyError, RuntimeError):
+            return []
+
     def list_candidate_histories(self, limit: int | None = None) -> list[dict[str, Any]]:
         if not self.is_available() or select is None or CandidateHistory is None:
             return []
@@ -610,6 +800,32 @@ class SQLStorageService:
                     statement = statement.limit(limit)
 
                 rows = session.scalars(statement).all()
+                candidate_verdicts: dict[str, dict[str, Any]] = {}
+                if rows and ReviewResult is not None:
+                    last_review_ids = sorted(
+                        {int(row.last_review_id) for row in rows if row.last_review_id is not None}
+                    )
+                    reviews_by_id: dict[int, Any] = {}
+                    if last_review_ids:
+                        reviews_by_id = {
+                            int(review.id): review
+                            for review in session.scalars(
+                                select(ReviewResult).where(ReviewResult.id.in_(last_review_ids))
+                            ).all()
+                        }
+
+                    candidate_verdicts = {}
+                    for row in rows:
+                        if row.last_review_id is None:
+                            continue
+                        review = reviews_by_id.get(int(row.last_review_id))
+                        if review is None:
+                            continue
+                        candidate_verdicts[row.candidate_id] = self._teacher_review_payload(
+                            decision=getattr(review, "teacher_decision", None),
+                            decided_at=getattr(review, "teacher_decided_at", None),
+                        )
+
                 return [
                     {
                         "candidate_id": row.candidate_id,
@@ -623,6 +839,10 @@ class SQLStorageService:
                         "first_seen_at": self._normalize_created_at(row.first_seen_at),
                         "last_seen_at": self._normalize_created_at(row.last_seen_at),
                         "last_review_id": int(row.last_review_id) if row.last_review_id is not None else None,
+                        "teacher_review": candidate_verdicts.get(
+                            row.candidate_id,
+                            self._teacher_review_payload(decision=None, decided_at=None),
+                        ),
                     }
                     for row in rows
                 ]
@@ -716,15 +936,23 @@ class SQLStorageService:
                     if video_hash and video_hash in seen_video_hashes:
                         continue
 
-                    incidents = [
-                        incident.to_payload()
-                        for incident in session.scalars(
-                            select(ReviewIncident)
-                            .where(ReviewIncident.review_id == review.id)
-                            .order_by(ReviewIncident.id.asc())
-                        ).all()
-                    ]
+                    incident_rows = session.scalars(
+                        select(ReviewIncident)
+                        .where(ReviewIncident.review_id == review.id)
+                        .order_by(ReviewIncident.id.asc())
+                    ).all()
+                    incidents = [incident.to_payload() for incident in incident_rows]
                     payload = self._build_review_payload(review, incidents)
+                    enriched_incidents = self._enrich_incidents_with_candidate_context(
+                        payload.get("incidents", []),
+                        result_payload=payload,
+                    )
+                    payload["incidents"] = enriched_incidents
+                    for incident_row, enriched_incident in zip(incident_rows, enriched_incidents):
+                        incident_row.candidate_id = self._normalize_candidate_id(enriched_incident.get("candidate_id")) or None
+                        incident_row.candidate_name = str(enriched_incident.get("candidate_name") or "") or None
+                        incident_row.candidate_email = str(enriched_incident.get("candidate_email") or "") or None
+                        incident_row.candidate_room = str(enriched_incident.get("candidate_room") or "") or None
                     histories_by_candidate_id = self._apply_candidate_rollups(
                         session=session,
                         review_id=int(review.id),
@@ -735,18 +963,37 @@ class SQLStorageService:
                     self._record_candidate_incidents(
                         session=session,
                         review_id=int(review.id),
-                        incidents=incidents,
+                        incidents=enriched_incidents,
                         histories_by_candidate_id=histories_by_candidate_id,
                     )
                     if video_hash:
                         seen_video_hashes.add(video_hash)
                     rebuilt_review_count += 1
 
+                self._sync_candidate_history_last_review_refs(session=session)
                 session.flush()
         except (SQLAlchemyError, RuntimeError, ValueError, TypeError):
             return 0
 
         return rebuilt_review_count
+
+    def sync_candidate_history_last_review_ids(self) -> int:
+        if (
+            not self.is_available()
+            or select is None
+            or CandidateHistory is None
+            or ReviewIncident is None
+            or ReviewResult is None
+        ):
+            return 0
+
+        try:
+            with db_session_manager.session_scope() as session:
+                updated_count = self._sync_candidate_history_last_review_refs(session=session)
+                session.flush()
+                return updated_count
+        except (SQLAlchemyError, RuntimeError, ValueError, TypeError):
+            return 0
 
     def backfill_reviews_from_results_dir(self, results_dir: str | Path = "results") -> int:
         if not self.is_available() or select is None or ReviewResult is None:

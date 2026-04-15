@@ -99,6 +99,36 @@ class DatabaseSessionManager:
             index_name="ix_review_results_teacher_decision",
             ddl="CREATE INDEX ix_review_results_teacher_decision ON review_results (teacher_decision)",
         )
+        self._ensure_nullable_column(
+            inspector=inspector,
+            table_name="review_incidents",
+            column_name="candidate_id",
+            ddl="ALTER TABLE review_incidents ADD candidate_id VARCHAR(128) NULL",
+        )
+        self._ensure_nullable_column(
+            inspector=inspector,
+            table_name="review_incidents",
+            column_name="candidate_name",
+            ddl="ALTER TABLE review_incidents ADD candidate_name VARCHAR(255) NULL",
+        )
+        self._ensure_nullable_column(
+            inspector=inspector,
+            table_name="review_incidents",
+            column_name="candidate_email",
+            ddl="ALTER TABLE review_incidents ADD candidate_email VARCHAR(255) NULL",
+        )
+        self._ensure_nullable_column(
+            inspector=inspector,
+            table_name="review_incidents",
+            column_name="candidate_room",
+            ddl="ALTER TABLE review_incidents ADD candidate_room VARCHAR(255) NULL",
+        )
+        self._ensure_index(
+            inspector=inspector,
+            table_name="review_incidents",
+            index_name="ix_review_incidents_candidate_id",
+            ddl="CREATE INDEX ix_review_incidents_candidate_id ON review_incidents (candidate_id)",
+        )
 
     def _ensure_nullable_column(self, inspector, table_name: str, column_name: str, ddl: str) -> None:
         if self.engine is None:

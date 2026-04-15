@@ -84,6 +84,16 @@ def _teacher_verdict_payload(status: str | None) -> dict[str, str | None]:
     return {"status": normalized_status, "label": label_map[normalized_status], "decided_at": None}
 
 
+def _teacher_verdict_label_for_export(student: dict) -> str:
+    teacher_review = student.get("teacher_review") if isinstance(student, dict) else {}
+    status = str((teacher_review or {}).get("status") or "").strip().lower()
+    return {
+        "confirmed": "Gian lan",
+        "dismissed": "Khong gian lan",
+        "pending": "Chua ket luan",
+    }.get(status, "Chua ket luan")
+
+
 def _format_csv_datetime(raw_value: str | None) -> str:
     raw_text = str(raw_value or "").strip()
     if not raw_text:
@@ -113,7 +123,62 @@ def _format_mmss(seconds: float) -> str:
     return f"{minutes:02d}:{remain_seconds:02d}"
 
 
-def build_violation_trend(latest_review: dict, bucket_count: int = 6) -> list[dict[str, int | str | bool]]:
+def build_violation_trend(
+    latest_review: dict,
+    trend_timestamps: list[str] | None = None,
+    bucket_count: int = 6,
+) -> list[dict[str, int | str | bool]]:
+    if trend_timestamps is not None:
+        window_now = datetime.now(VIETNAM_TZ)
+        aligned_hour = (window_now.hour // 4) * 4
+        current_bucket_start = window_now.replace(hour=aligned_hour, minute=0, second=0, microsecond=0)
+        window_start = current_bucket_start - timedelta(hours=4 * max(0, bucket_count - 1))
+        bucket_span_seconds = float(4 * 60 * 60)
+        counts = [0 for _ in range(bucket_count)]
+
+        for raw_value in trend_timestamps:
+            raw_text = str(raw_value or "").strip()
+            if not raw_text:
+                continue
+            try:
+                parsed = datetime.fromisoformat(raw_text.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            local_time = parsed.astimezone(VIETNAM_TZ)
+            if local_time < window_start or local_time > window_now:
+                continue
+            elapsed_seconds = (local_time - window_start).total_seconds()
+            bucket_index = min(bucket_count - 1, int(elapsed_seconds / max(1.0, bucket_span_seconds)))
+            counts[bucket_index] += 1
+
+        labels = [
+            (window_start + timedelta(seconds=bucket_span_seconds * index)).strftime("%H:%M")
+            for index in range(bucket_count)
+        ]
+
+        max_count = max(counts) if counts else 0
+        peak_index = counts.index(max_count) if max_count > 0 else -1
+
+        trend_points: list[dict[str, int | str | bool]] = []
+        for index, count in enumerate(counts):
+            if max_count <= 0 or count <= 0:
+                height = 0
+            else:
+                height = max(8, int(round((count / max_count) * 100)))
+            trend_points.append(
+                {
+                    "label": labels[index],
+                    "count": count,
+                    "height": height,
+                    "highlight": max_count > 0 and index == peak_index,
+                    "current": index == bucket_count - 1,
+                    "tooltip": f"{labels[index]}: {count} sự cố",
+                }
+            )
+        return trend_points
+
     incidents = latest_review.get("incidents", []) if isinstance(latest_review, dict) else []
     summary = latest_review.get("summary", {}) if isinstance(latest_review, dict) else {}
     duration_seconds = float(summary.get("duration_seconds") or 0.0)
@@ -152,6 +217,8 @@ def build_violation_trend(latest_review: dict, bucket_count: int = 6) -> list[di
                 "count": count,
                 "height": height,
                 "highlight": max_count > 0 and index == peak_index,
+                "current": index == bucket_count - 1,
+                "tooltip": f"{labels[index]}: {count} sự cố",
             }
         )
     return trend_points
@@ -202,7 +269,8 @@ def build_system_status(latest_review: dict, performance_metrics: dict[str, str]
     else:
         frame_fps_label = "--"
 
-    face_engine_label = "Bật" if face_engine.get("enabled") else "Tắt"
+    candidate_count = int(face_engine.get("candidate_count") or 0) if face_engine.get("enabled") else 0
+    face_engine_label = f"Bật ({candidate_count} hồ sơ)" if face_engine.get("enabled") else "Tắt"
     status_value = str(latest_review.get("status") or "idle")
     state_label_map = {
         "completed": "System Online",
@@ -324,31 +392,8 @@ def build_dashboard_context(request: Request) -> dict:
         high_risk = len([item for item in latest_students_report if item.get("risk") == "high"])
         dashboard_payload["overview"]["active_sessions"] = len(latest_students_report)
         dashboard_payload["overview"]["integrity_score"] = f"{max(0.0, 100.0 - (high_risk * 8.0)):.1f}%"
-    latest_teacher_review = latest_review.get("teacher_review") or {}
-    latest_teacher_verdict = _teacher_verdict_payload(latest_teacher_review.get("status"))
-    latest_teacher_verdict["decided_at"] = latest_teacher_review.get("decided_at")
-    latest_candidate_ids = {
-        str(item.get("candidate_id") or "").strip()
-        for item in latest_students_report
-        if str(item.get("candidate_id") or "").strip() and str(item.get("candidate_id") or "").strip() != "UNKNOWN"
-    }
-    if not latest_candidate_ids:
-        primary_candidate_id = str((latest_review.get("primary_candidate") or {}).get("candidate_id") or "").strip()
-        if primary_candidate_id and primary_candidate_id != "UNKNOWN":
-            latest_candidate_ids.add(primary_candidate_id)
-
     source_students = historical_students or latest_students_report
-    dashboard_payload["students"] = [
-        {
-            **student,
-            "teacher_review": (
-                dict(latest_teacher_verdict)
-                if str(student.get("candidate_id") or "").strip() in latest_candidate_ids
-                else _teacher_verdict_payload(None)
-            ),
-        }
-        for student in source_students
-    ]
+    dashboard_payload["students"] = [dict(student) for student in source_students]
     student_items = dashboard_payload.get("students", [])
     students_total = len(student_items)
     students_high_risk = len([item for item in student_items if str(item.get("risk") or "") == "high"])
@@ -376,7 +421,11 @@ def build_dashboard_context(request: Request) -> dict:
         else "Chua ghi nhan su co trong lan hau kiem gan nhat."
     )
     performance_metrics = build_performance_metrics(latest_review)
-    violation_trend = build_violation_trend(latest_review)
+    recent_incident_timestamps = sql_storage_service.list_recent_incident_timestamps(hours=24)
+    violation_trend = build_violation_trend(
+        latest_review,
+        trend_timestamps=recent_incident_timestamps,
+    )
     system_status = build_system_status(latest_review, performance_metrics)
 
     context = {
@@ -416,8 +465,7 @@ def _build_students_csv(students: list[dict]) -> str:
             "Muc do rui ro",
             "So lan hau kiem",
             "Hanh vi ghi nhan",
-            "Ghi nhan dau tien",
-            "Ghi nhan gan nhat",
+            "Ket luan",
         ]
     )
     for index, student in enumerate(students, start=1):
@@ -432,8 +480,7 @@ def _build_students_csv(students: list[dict]) -> str:
                 _risk_badge_vi(str(student.get("risk") or "low")),
                 int(student.get("review_count") or 0),
                 " | ".join([str(item).strip() for item in (student.get("behaviors") or []) if str(item).strip()]),
-                _format_csv_datetime(student.get("first_seen_at")),
-                _format_csv_datetime(student.get("last_seen_at")),
+                _teacher_verdict_label_for_export(student),
             ]
         )
     return f"\ufeffsep=;\r\n{buffer.getvalue()}"
@@ -463,8 +510,7 @@ def _build_students_excel_html(students: list[dict]) -> str:
                     f"<td>{escape(_risk_badge_vi(str(student.get('risk') or 'low')))}</td>",
                     f"<td>{int(student.get('review_count') or 0)}</td>",
                     f"<td>{behaviors}</td>",
-                    f"<td>{escape(_format_csv_datetime(student.get('first_seen_at')))}</td>",
-                    f"<td>{escape(_format_csv_datetime(student.get('last_seen_at')))}</td>",
+                    f"<td>{escape(_teacher_verdict_label_for_export(student))}</td>",
                     "</tr>",
                 ]
             )
@@ -526,8 +572,7 @@ def _build_students_excel_html(students: list[dict]) -> str:
         <th>Muc do rui ro</th>
         <th>So lan hau kiem</th>
         <th>Hanh vi ghi nhan</th>
-        <th>Ghi nhan dau tien</th>
-        <th>Ghi nhan gan nhat</th>
+        <th>Ket luan</th>
       </tr>
     </thead>
     <tbody>

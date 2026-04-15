@@ -65,6 +65,10 @@ class ReviewIncident(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     review_id: Mapped[int] = mapped_column(ForeignKey("review_results.id"), nullable=False, index=True)
+    candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    candidate_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    candidate_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    candidate_room: Mapped[str | None] = mapped_column(String(255), nullable=True)
     time_label: Mapped[str | None] = mapped_column(String(32), nullable=True)
     time_seconds: Mapped[float | None] = mapped_column(nullable=True)
     label: Mapped[str] = mapped_column(String(255), nullable=False, default="")
@@ -78,6 +82,10 @@ class ReviewIncident(Base):
 
     def to_payload(self) -> dict[str, Any]:
         return {
+            "candidate_id": self.candidate_id,
+            "candidate_name": self.candidate_name,
+            "candidate_email": self.candidate_email,
+            "candidate_room": self.candidate_room,
             "time": self.time_label,
             "time_seconds": self.time_seconds,
             "label": self.label,

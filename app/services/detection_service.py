@@ -54,7 +54,7 @@ class DetectionService:
         enable_face_recognition: bool = True,
         min_signal_streak: int = 2,
         mediapipe_interval_samples: int = 3,
-        face_recognition_interval_samples: int = 8,
+        face_recognition_interval_samples: int = 12,
         face_identity_ttl_samples: int = 24,
     ) -> None:
         self.weights_dir = Path(weights_dir)
