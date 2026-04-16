@@ -39,6 +39,9 @@ class SettingsPayload(BaseModel):
     confidence_threshold: float
     extraction_interval_seconds: float
     behavior_threshold: float
+    enable_gaze_alerts: bool
+    enable_cell_phone_alerts: bool
+    enable_multiple_people_alerts: bool
 
 
 class ReviewDecisionPayload(BaseModel):

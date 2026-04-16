@@ -569,10 +569,30 @@
               </div>
 
               <div class="toggle-list">
-                <label class="toggle-row"><div><p>Liếc nhìn xung quanh</p><small>Phát hiện hướng mắt bất thường.</small></div><input type="checkbox" checked><span class="toggle-ui"></span></label>
-                <label class="toggle-row"><div><p>Sử dụng điện thoại</p><small>Nhận diện thiết bị di động.</small></div><input type="checkbox" checked><span class="toggle-ui"></span></label>
-                <label class="toggle-row"><div><p>Trao đổi nhóm</p><small>Phát hiện nhiều người trong khung hình.</small></div><input type="checkbox"><span class="toggle-ui"></span></label>
-                <label class="toggle-row"><div><p>Tiếng ồn bất thường</p><small>Phân tích cường độ âm thanh.</small></div><input type="checkbox" checked><span class="toggle-ui"></span></label>
+                <label class="toggle-row">
+                  <div>
+                    <p>Liếc nhìn xung quanh</p>
+                    <small>Phát hiện hướng mắt bất thường.</small>
+                  </div>
+                  <input id="toggle-gaze-alerts" type="checkbox" {% if ai_settings["enable_gaze_alerts"] %}checked{% endif %}>
+                  <span class="toggle-ui"></span>
+                </label>
+                <label class="toggle-row">
+                  <div>
+                    <p>Sử dụng điện thoại</p>
+                    <small>Nhận diện thiết bị di động và tương tác với điện thoại.</small>
+                  </div>
+                  <input id="toggle-cell-phone-alerts" type="checkbox" {% if ai_settings["enable_cell_phone_alerts"] %}checked{% endif %}>
+                  <span class="toggle-ui"></span>
+                </label>
+                <label class="toggle-row">
+                  <div>
+                    <p>Trao đổi nhóm</p>
+                    <small>Phát hiện nhiều người trong khung hình.</small>
+                  </div>
+                  <input id="toggle-multiple-people-alerts" type="checkbox" {% if ai_settings["enable_multiple_people_alerts"] %}checked{% endif %}>
+                  <span class="toggle-ui"></span>
+                </label>
               </div>
 
               <div class="stack-buttons">
@@ -615,5 +635,5 @@
 {% block scripts %}
   <script id="dashboard-data" type="application/json">{{ dashboard | tojson }}</script>
   <script id="review-data" type="application/json">{{ latest_review | tojson }}</script>
-  <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260415i"></script>
+  <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260416a"></script>
 {% endblock %}

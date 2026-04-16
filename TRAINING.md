@@ -13,13 +13,25 @@ This project now supports a second classifier trained from that CSV and used in 
 ## Train
 
 ```powershell
-python scripts/train_behavior_model.py --dataset "d:\Students suspicious behaviors detection dataset fo.zip"
+python scripts/train_behavior_model.py
 ```
 
 Use strict schema validation if you want training to fail on mismatch between CSV and Word glossary:
 
 ```powershell
-python scripts/train_behavior_model.py --dataset "d:\Students suspicious behaviors detection dataset fo.zip" --strict-doc-schema
+python scripts/train_behavior_model.py --strict-doc-schema
+```
+
+The default dataset location is now:
+
+```text
+data/datasets/Students suspicious behaviors detection dataset fo.zip
+```
+
+If you want to use a different source file, you can still override it:
+
+```powershell
+python scripts/train_behavior_model.py --dataset "path/to/your-dataset.zip"
 ```
 
 The trained artifact is stored at `models/suspicious_behavior_model.joblib`.

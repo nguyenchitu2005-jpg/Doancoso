@@ -55,7 +55,7 @@ class DetectionService:
         enable_face_recognition: bool = True,
         min_signal_streak: int = 2,
         mediapipe_interval_samples: int = 3,
-        face_recognition_interval_samples: int = 12,
+        face_recognition_interval_samples: int = 18,
         face_identity_ttl_samples: int = 24,
     ) -> None:
         self.weights_dir = Path(weights_dir)
@@ -74,6 +74,9 @@ class DetectionService:
             face_identity_ttl_samples,
         )
         self.gaze_warmup_seconds = 3.0
+        self.enable_gaze_alerts = True
+        self.enable_cell_phone_alerts = True
+        self.enable_multiple_people_alerts = False
         self.results_dir.mkdir(parents=True, exist_ok=True)
         self.weights_dir.mkdir(parents=True, exist_ok=True)
         self._model = None
@@ -97,6 +100,12 @@ class DetectionService:
             self.sample_interval_seconds = max(0.25, min(float(settings["extraction_interval_seconds"]), 5.0))
         if "behavior_threshold" in settings:
             self.behavior_model_service.score_threshold = max(0.6, min(float(settings["behavior_threshold"]), 0.98))
+        if "enable_gaze_alerts" in settings:
+            self.enable_gaze_alerts = bool(settings["enable_gaze_alerts"])
+        if "enable_cell_phone_alerts" in settings:
+            self.enable_cell_phone_alerts = bool(settings["enable_cell_phone_alerts"])
+        if "enable_multiple_people_alerts" in settings:
+            self.enable_multiple_people_alerts = bool(settings["enable_multiple_people_alerts"])
 
     def _resolve_model_source(self) -> str | Path:
         explicit_weight = self.weights_dir / self.model_name
@@ -332,11 +341,11 @@ class DetectionService:
         person_detections: list[dict[str, Any]],
     ) -> int:
         count = 0
-        if phone_detections:
+        if self.enable_cell_phone_alerts and phone_detections:
             count += 1
-        if len(person_detections) > 1:
+        if self.enable_multiple_people_alerts and len(person_detections) > 1:
             count += 1
-        if mediapipe_signals.get("hand_phone_alert"):
+        if self.enable_cell_phone_alerts and mediapipe_signals.get("hand_phone_alert"):
             count += 1
         if mediapipe_signals.get("face_missing"):
             count += 1
@@ -526,6 +535,8 @@ class DetectionService:
         mediapipe_signals: dict[str, Any],
         phone_detections: list[dict[str, Any]],
     ) -> bool:
+        if not self.enable_gaze_alerts:
+            return False
         if timestamp_seconds < self.gaze_warmup_seconds:
             return False
         if phone_detections:
@@ -556,7 +567,11 @@ class DetectionService:
             phone_detections=phone_detections,
             person_detections=person_detections,
         )
-        has_hard_evidence = bool(phone_detections) or len(person_detections) > 1 or mediapipe_signals.get("hand_phone_alert")
+        has_hard_evidence = (
+            (self.enable_cell_phone_alerts and bool(phone_detections))
+            or (self.enable_multiple_people_alerts and len(person_detections) > 1)
+            or (self.enable_cell_phone_alerts and bool(mediapipe_signals.get("hand_phone_alert")))
+        )
         face_missing = bool(mediapipe_signals.get("face_missing"))
         if score >= max(0.96, threshold + 0.12):
             return streak >= self.min_signal_streak and (has_hard_evidence or face_missing)
@@ -916,7 +931,7 @@ class DetectionService:
         multiple_people_streak = self._advance_streak(
             signal_streaks,
             "multiple_people",
-            len(person_detections) > 1,
+            self.enable_multiple_people_alerts and len(person_detections) > 1,
         )
         if (
             self._crossed_streak_threshold(
@@ -947,9 +962,9 @@ class DetectionService:
         phone_streak = self._advance_streak(
             signal_streaks,
             "cell_phone",
-            bool(phone_detections),
+            self.enable_cell_phone_alerts and bool(phone_detections),
         )
-        strong_phone_signal = self._phone_signal_is_strong(
+        strong_phone_signal = self.enable_cell_phone_alerts and self._phone_signal_is_strong(
             phone_detections=phone_detections,
             frame_shape=frame.shape[:2],
         )
@@ -1344,7 +1359,7 @@ class DetectionService:
                 multiple_people_streak = self._advance_streak(
                     signal_streaks,
                     "multiple_people",
-                    len(person_detections) > 1,
+                    self.enable_multiple_people_alerts and len(person_detections) > 1,
                 )
                 if (
                     self._crossed_streak_threshold(
@@ -1379,15 +1394,21 @@ class DetectionService:
                     )
                     last_incident_time["multiple_people"] = timestamp_seconds
 
+                video_startup_guard_passed = timestamp_seconds >= 2.0
+
                 previous_phone_streak = signal_streaks.get("cell_phone", 0)
                 phone_streak = self._advance_streak(
                     signal_streaks,
                     "cell_phone",
-                    bool(phone_detections),
+                    video_startup_guard_passed and self.enable_cell_phone_alerts and bool(phone_detections),
                 )
-                strong_phone_signal = self._phone_signal_is_strong(
+                strong_phone_signal = (
+                    video_startup_guard_passed
+                    and self.enable_cell_phone_alerts
+                    and self._phone_signal_is_strong(
                     phone_detections=phone_detections,
                     frame_shape=frame.shape[:2],
+                    )
                 )
                 if (
                     (
@@ -1429,17 +1450,20 @@ class DetectionService:
                 head_pose_streak = self._advance_streak(
                     signal_streaks,
                     "head_pose",
-                    bool(
-                        mediapipe_signals.get("head_pose_strong")
-                        and mediapipe_features.get("head_pose") in {"left", "right", "down"}
-                        and not phone_detections
-                        and len(person_detections) <= 1
-                    )
-                    or bool(
-                        mediapipe_signals.get("head_pose_alert")
-                        and mediapipe_features.get("head_pose") == "up"
-                        and not phone_detections
-                        and len(person_detections) <= 1
+                    video_startup_guard_passed
+                    and (
+                        bool(
+                            mediapipe_signals.get("head_pose_strong")
+                            and mediapipe_features.get("head_pose") in {"left", "right", "down"}
+                            and not phone_detections
+                            and len(person_detections) <= 1
+                        )
+                        or bool(
+                            mediapipe_signals.get("head_pose_alert")
+                            and mediapipe_features.get("head_pose") == "up"
+                            and not phone_detections
+                            and len(person_detections) <= 1
+                        )
                     ),
                 )
                 if (
@@ -1537,7 +1561,7 @@ class DetectionService:
                 hand_phone_streak = self._advance_streak(
                     signal_streaks,
                     "hand_phone",
-                    bool(mediapipe_signals.get("hand_phone_alert")),
+                    self.enable_cell_phone_alerts and bool(mediapipe_signals.get("hand_phone_alert")),
                 )
                 if (
                     self._crossed_streak_threshold(
@@ -1619,17 +1643,20 @@ class DetectionService:
                     behavior_streak = self._advance_streak(
                         signal_streaks,
                         "behavior_model",
-                        bool(
+                        video_startup_guard_passed
+                        and bool(
                             behavior_prediction.get("is_suspicious")
                             and (
-                                phone_detections
-                                or len(person_detections) > 1
-                                or mediapipe_signals.get("hand_phone_alert")
+                                (self.enable_cell_phone_alerts and phone_detections)
+                                or (self.enable_multiple_people_alerts and len(person_detections) > 1)
+                                or (self.enable_cell_phone_alerts and mediapipe_signals.get("hand_phone_alert"))
                                 or mediapipe_signals.get("face_missing")
                             )
                         ),
                     )
                     if (
+                        video_startup_guard_passed
+                        and
                         self._should_emit_behavior_incident(
                             behavior_prediction=behavior_prediction,
                             mediapipe_signals=mediapipe_signals,

@@ -27,17 +27,21 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DATASET_PATH = PROJECT_ROOT / "data" / "datasets" / "Students suspicious behaviors detection dataset fo.zip"
+DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "models" / "suspicious_behavior_model.joblib"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the suspicious-behavior tabular classifier.")
     parser.add_argument(
         "--dataset",
-        default=r"d:\Students suspicious behaviors detection dataset fo.zip",
+        default=str(DEFAULT_DATASET_PATH),
         help="Path to source dataset (.zip or .csv).",
     )
     parser.add_argument(
         "--output",
-        default="models/suspicious_behavior_model.joblib",
+        default=str(DEFAULT_OUTPUT_PATH),
         help="Output artifact path.",
     )
     parser.add_argument(

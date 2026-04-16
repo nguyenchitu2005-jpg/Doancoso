@@ -379,6 +379,9 @@ const intervalRange = document.getElementById("interval-range");
 const intervalValue = document.getElementById("interval-value");
 const behaviorThresholdRange = document.getElementById("behavior-threshold-range");
 const behaviorThresholdValue = document.getElementById("behavior-threshold-value");
+const toggleGazeAlerts = document.getElementById("toggle-gaze-alerts");
+const toggleCellPhoneAlerts = document.getElementById("toggle-cell-phone-alerts");
+const toggleMultiplePeopleAlerts = document.getElementById("toggle-multiple-people-alerts");
 const saveSettingsButton = document.getElementById("save-settings-button");
 const resetSettingsButton = document.getElementById("reset-settings-button");
 const settingsFeedback = document.getElementById("settings-feedback");
@@ -416,6 +419,9 @@ function collectAiSettings() {
     confidence_threshold: Number(confidenceRange?.value || 0.75),
     extraction_interval_seconds: Number(intervalRange?.value || 2.0),
     behavior_threshold: Number(behaviorThresholdRange?.value || 0.82),
+    enable_gaze_alerts: Boolean(toggleGazeAlerts?.checked),
+    enable_cell_phone_alerts: Boolean(toggleCellPhoneAlerts?.checked),
+    enable_multiple_people_alerts: Boolean(toggleMultiplePeopleAlerts?.checked),
   };
 }
 
@@ -431,6 +437,15 @@ function applyAiSettings(settings) {
   if (behaviorThresholdRange && behaviorThresholdValue && typeof settings.behavior_threshold === "number") {
     behaviorThresholdRange.value = settings.behavior_threshold.toFixed(2);
     behaviorThresholdValue.textContent = settings.behavior_threshold.toFixed(2);
+  }
+  if (toggleGazeAlerts && typeof settings.enable_gaze_alerts === "boolean") {
+    toggleGazeAlerts.checked = settings.enable_gaze_alerts;
+  }
+  if (toggleCellPhoneAlerts && typeof settings.enable_cell_phone_alerts === "boolean") {
+    toggleCellPhoneAlerts.checked = settings.enable_cell_phone_alerts;
+  }
+  if (toggleMultiplePeopleAlerts && typeof settings.enable_multiple_people_alerts === "boolean") {
+    toggleMultiplePeopleAlerts.checked = settings.enable_multiple_people_alerts;
   }
 }
 

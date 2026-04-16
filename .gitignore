@@ -11,3 +11,4 @@ weights/*
 !weights/.gitkeep
 models/*
 !models/.gitkeep
+data/datasets/*.zip
