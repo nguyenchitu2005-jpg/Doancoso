@@ -22,6 +22,8 @@ class BehaviorModelService:
         model_path: str | Path = "models/suspicious_behavior_model.joblib",
         score_threshold: float = 0.82,
     ) -> None:
+        # Service nay khong xu ly anh truc tiep.
+        # No nhan bo feature da duoc YOLO/MediaPipe trich xuat va chay model XGBoost.
         self.model_path = Path(model_path)
         self.score_threshold = max(0.0, min(score_threshold, 1.0))
         self._artifact: dict[str, Any] | None = None
@@ -29,6 +31,7 @@ class BehaviorModelService:
         self._load_error: str | None = None
 
     def _load_artifact(self) -> dict[str, Any] | None:
+        # Lazy-load artifact .joblib chua pipeline sklearn/XGBoost va metadata train.
         if self._load_attempted:
             return self._artifact
 
@@ -60,6 +63,7 @@ class BehaviorModelService:
         return self._load_artifact() is not None
 
     def get_status(self) -> dict[str, Any]:
+        # Trang thai nay duoc dua len UI/debug de biet model co san sang hay khong.
         artifact = self._load_artifact()
         if artifact is None:
             return {
@@ -79,6 +83,7 @@ class BehaviorModelService:
         }
 
     def _primary_detection(self, detections: list[dict[str, Any]], label: str) -> dict[str, Any] | None:
+        # Lay object co confidence cao nhat cho mot nhan cu the, vi model chi can object "chinh".
         matches = [item for item in detections if item.get("label") == label]
         if not matches:
             return None
@@ -89,6 +94,7 @@ class BehaviorModelService:
         return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
     def _empty_feature_record(self) -> dict[str, Any]:
+        # Bo feature chuan khop voi schema da train trong dataset tabular.
         return {
             "face_present": 0,
             "no_of_face": 0,
@@ -134,6 +140,8 @@ class BehaviorModelService:
         detections: list[dict[str, Any]],
         vision_features: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        # Gop feature vision muc cao (head_pose, gaze, hand...) voi detections YOLO
+        # thanh 1 row duy nhat de dua vao model tabular.
         record = self._empty_feature_record()
         if vision_features:
             for key, value in vision_features.items():
@@ -147,6 +155,7 @@ class BehaviorModelService:
         if phones:
             primary_phone = max(phones, key=lambda item: float(item.get("confidence", 0.0)))
 
+        # Neu MediaPipe chua xac nhan duoc face box, co the fallback bang box person tu YOLO.
         if primary_person is not None and not int(record.get("face_present") or 0):
             px1, py1, px2, py2 = [float(value) for value in primary_person["box"]]
             record["face_present"] = 1
@@ -167,6 +176,7 @@ class BehaviorModelService:
         return record
 
     def _risk_for_score(self, score: float) -> str:
+        # Quy doi score cua model thanh muc risk de UI va logic review de xu ly.
         if score >= 0.85:
             return "high"
         if score >= self.score_threshold:
@@ -174,6 +184,7 @@ class BehaviorModelService:
         return "low"
 
     def _build_reasons(self, feature_record: dict[str, Any], score: float) -> list[str]:
+        # Tao danh sach ly do co the giai thich tai sao model nghi ngo frame nay.
         reasons: list[str] = []
         if feature_record.get("phone_present") == 1:
             reasons.append("Khung hinh co dien thoai")
@@ -192,6 +203,10 @@ class BehaviorModelService:
         return reasons
 
     def predict(self, feature_record: dict[str, Any]) -> dict[str, Any]:
+        # Luong suy luan:
+        # - canh feature theo dung feature_columns luc train
+        # - predict_proba
+        # - tra ve score/risk/reasons cho DetectionService
         artifact = self._load_artifact()
         if artifact is None:
             return {

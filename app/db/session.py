@@ -14,7 +14,9 @@ from app.db.models import Base
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-load_dotenv(BASE_DIR / ".env")
+for env_path in (BASE_DIR / ".env", BASE_DIR / "models" / ".env"):
+    if env_path.exists():
+        load_dotenv(env_path, override=False)
 
 
 class DatabaseSessionManager:

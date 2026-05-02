@@ -32,6 +32,7 @@ DEFAULT_DATASET_PATH = PROJECT_ROOT / "data" / "datasets" / "Students suspicious
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "models" / "suspicious_behavior_model.joblib"
 
 
+# Khai bao tham so train de co the chay script truc tiep tu terminal.
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the suspicious-behavior tabular classifier.")
     parser.add_argument(
@@ -80,6 +81,7 @@ def parse_args() -> argparse.Namespace:
 WORD_NAMESPACE = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
 
+# DOCX duoc mo nhu mot file zip; ham nay doc phan text thuần de phuc vu doi chieu mo ta dataset.
 def extract_docx_text(docx_bytes: bytes) -> str:
     with ZipFile(io.BytesIO(docx_bytes)) as docx_archive:
         if "word/document.xml" not in docx_archive.namelist():
@@ -95,6 +97,7 @@ def extract_docx_text(docx_bytes: bytes) -> str:
     return "\n".join(text for text in paragraphs if text)
 
 
+# Trich xuat bang trong file Word, vi dataset nay mo ta schema bang DOCX thay vi JSON/schema rieng.
 def extract_docx_tables(docx_bytes: bytes) -> list[list[list[str]]]:
     with ZipFile(io.BytesIO(docx_bytes)) as docx_archive:
         if "word/document.xml" not in docx_archive.namelist():
@@ -117,11 +120,13 @@ def extract_docx_tables(docx_bytes: bytes) -> list[list[list[str]]]:
     return tables
 
 
+# Chuan hoa cac ten feature duoc nhac den trong van ban/bang mo ta.
 def parse_feature_tokens(raw_text: str) -> list[str]:
     candidates = re.findall(r"[A-Za-z][A-Za-z0-9_]*", raw_text)
     return [token for token in candidates if "_" in token or token.lower() == "label"]
 
 
+# Doi chieu cot trong CSV voi glossary/schema doc duoc tu 2 file Word di kem dataset.
 def build_doc_schema_report(
     dataframe: pd.DataFrame,
     supplemental_documents: list[dict[str, Any]],
@@ -219,6 +224,9 @@ def build_doc_schema_report(
     }
 
 
+# Ho tro 2 kieu dataset:
+# - CSV thuan
+# - ZIP chua 1 CSV + 2 DOCX mo ta cau truc/du lieu
 def load_dataset(dataset_path: Path) -> tuple[pd.DataFrame, str, list[dict[str, Any]]]:
     if not dataset_path.exists():
         raise FileNotFoundError(f"Khong tim thay dataset: {dataset_path}")
@@ -231,14 +239,19 @@ def load_dataset(dataset_path: Path) -> tuple[pd.DataFrame, str, list[dict[str, 
 
     with ZipFile(dataset_path) as archive:
         csv_names = sorted(name for name in archive.namelist() if name.lower().endswith(".csv"))
-        if not csv_names:
-            raise ValueError("Khong tim thay file CSV ben trong file zip.")
+        docx_names = sorted(name for name in archive.namelist() if name.lower().endswith(".docx"))
+
+        if len(csv_names) != 1 or len(docx_names) != 2:
+            raise ValueError(
+                "Dataset zip phai chua dung 1 file CSV va 2 file DOCX mo ta cau truc. "
+                f"Tim thay: {len(csv_names)} CSV, {len(docx_names)} DOCX."
+            )
+
         selected_csv = csv_names[0]
         with archive.open(selected_csv) as csv_handle:
             dataframe = pd.read_csv(csv_handle)
 
         supplemental_documents: list[dict[str, Any]] = []
-        docx_names = sorted(name for name in archive.namelist() if name.lower().endswith(".docx"))
         for docx_name in docx_names:
             with archive.open(docx_name) as docx_handle:
                 document_bytes = docx_handle.read()
@@ -257,6 +270,10 @@ def load_dataset(dataset_path: Path) -> tuple[pd.DataFrame, str, list[dict[str, 
     return dataframe, f"{dataset_path}!/{selected_csv}", supplemental_documents
 
 
+# Xay dung pipeline sklearn gom:
+# - xu ly cot so
+# - xu ly cot phan loai
+# - XGBoost classifier o cuoi luong
 def build_pipeline(
     numeric_columns: list[str],
     categorical_columns: list[str],
@@ -311,6 +328,7 @@ def build_pipeline(
     )
 
 
+# Tinh bo metric giu lai trong artifact de backend co the hien thi lai sau khi train.
 def compute_metrics(y_true: pd.Series, y_pred: Any, y_score: Any) -> dict[str, Any]:
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
     return {
@@ -329,6 +347,7 @@ def compute_metrics(y_true: pd.Series, y_pred: Any, y_score: Any) -> dict[str, A
 
 
 def main() -> None:
+    # 1) Nap dataset va kiem tra cot nhan.
     args = parse_args()
     dataset_path = Path(args.dataset)
     output_path = Path(args.output)
@@ -347,6 +366,7 @@ def main() -> None:
             f"Warnings: {' | '.join(doc_schema_report.get('warnings', []))}"
         )
 
+    # 2) Tach feature/label va xac dinh cot so - cot phan loai.
     feature_columns = [column for column in dataframe.columns if column != args.label_column]
     features = dataframe[feature_columns]
     target = dataframe[args.label_column].astype(int)
@@ -364,6 +384,7 @@ def main() -> None:
         scale_pos_weight=scale_pos_weight,
     )
 
+    # 3) Train voi hold-out de lay metric danh gia ban dau.
     training_mode = "holdout_only"
     if 0.0 < args.test_size < 1.0:
         X_train, X_test, y_train, y_test = train_test_split(
@@ -382,10 +403,12 @@ def main() -> None:
             "note": "Khong co hold-out metrics vi test-size khong nam trong khoang (0, 1).",
         }
 
+    # 4) Neu duoc yeu cau, fit lai tren 100% du lieu truoc khi luu artifact.
     if args.train_on_full_data:
         pipeline.fit(features, target)
         training_mode = "full_data_refit_after_evaluation"
 
+    # 5) Dong goi toan bo metadata can thiet de backend co the load va giai thich model.
     artifact = {
         "pipeline": pipeline,
         "feature_columns": feature_columns,
@@ -408,6 +431,7 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(artifact, output_path)
 
+    # 6) In thong tin chinh ra stdout de de kiem tra sau khi train bang terminal.
     print(f"Saved model artifact to: {output_path}")
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
     if doc_schema_report.get("warnings"):

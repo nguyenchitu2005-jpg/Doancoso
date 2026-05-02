@@ -757,7 +757,7 @@ h3 {
 }
 
 .review-grid {
-  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 0.75fr);
+  grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.88fr);
   align-items: start;
 }
 
@@ -843,6 +843,7 @@ h3 {
 .selected-file-name {
   color: var(--on-surface-variant);
   font-size: 0.92rem;
+  overflow-wrap: anywhere;
 }
 
 .file-clear-button {
@@ -890,6 +891,63 @@ h3 {
 .feedback-card.warning {
   color: #735300;
   background: rgba(255, 239, 184, 0.9);
+}
+
+.review-history-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.review-session-list {
+  display: grid;
+  gap: 10px;
+}
+
+.review-session-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(0, 23, 52, 0.08);
+  background: rgba(255, 255, 255, 0.82);
+  text-align: left;
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.review-session-item:hover {
+  transform: translateY(-1px);
+  border-color: rgba(11, 68, 126, 0.22);
+  box-shadow: 0 14px 24px rgba(15, 32, 56, 0.08);
+}
+
+.review-session-item.is-active {
+  border-color: rgba(11, 68, 126, 0.42);
+  background: rgba(227, 238, 251, 0.82);
+  box-shadow: inset 0 0 0 1px rgba(11, 68, 126, 0.14);
+}
+
+.review-session-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.review-session-copy strong {
+  color: var(--on-surface);
+}
+
+.review-session-copy p,
+.review-session-meta small {
+  margin: 0;
+  color: var(--on-surface-variant);
+}
+
+.review-session-meta {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
 }
 
 .upload-item {
@@ -1119,7 +1177,11 @@ h3 {
 
 .incident-rail {
   display: grid;
-  gap: 18px;
+  gap: 12px;
+  align-self: start;
+  align-content: start;
+  grid-template-rows: auto auto;
+  grid-auto-rows: max-content;
 }
 
 .rail-header {
@@ -1150,16 +1212,20 @@ h3 {
 }
 
 .incident-list {
-  max-height: 760px;
+  height: clamp(640px, 84vh, 1120px);
+  min-height: 640px;
+  max-height: 1120px;
+  align-content: start;
+  grid-auto-rows: max-content;
   overflow: auto;
-  padding-right: 4px;
+  padding-right: 6px;
 }
 
 .incident-card {
   position: relative;
   display: grid;
-  gap: 10px;
-  padding: 20px 18px;
+  gap: 14px;
+  padding: 22px 20px 24px;
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.82);
   box-shadow: var(--shadow-ambient);
@@ -1197,7 +1263,8 @@ h3 {
   border-radius: 14px;
   border: 1px solid rgba(0, 23, 52, 0.1);
   object-fit: cover;
-  aspect-ratio: 16 / 9;
+  aspect-ratio: 4 / 3;
+  min-height: 260px;
 }
 
 .incident-card.incident-card-empty {
@@ -1628,6 +1695,15 @@ input[type="range"]::-webkit-slider-thumb {
 
   .room-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .incident-list {
+    height: clamp(460px, 66vh, 820px);
+    min-height: 460px;
+  }
+
+  .incident-thumb {
+    min-height: 220px;
   }
 }
 

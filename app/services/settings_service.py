@@ -6,11 +6,15 @@ from typing import Any
 
 
 DEFAULT_AI_SETTINGS: dict[str, float | bool] = {
+    # Day la bo gia tri mac dinh du phong.
+    # Neu data/ai_settings.json khong ton tai hoac bi loi thi app moi roi ve day.
     "confidence_threshold": 0.75,
-    "extraction_interval_seconds": 2.0,
+    "phone_conf_threshold": 0.30,
+    "extraction_interval_seconds": 0.5,
     "behavior_threshold": 0.82,
     "enable_gaze_alerts": True,
     "enable_cell_phone_alerts": True,
+    "enable_face_missing_alerts": True,
     "enable_multiple_people_alerts": False,
 }
 
@@ -19,10 +23,12 @@ class SettingsService:
     """Persist lightweight dashboard settings in a JSON file."""
 
     def __init__(self, config_path: str | Path = "data/ai_settings.json") -> None:
+        # Toan bo setting UI duoc luu trong mot file JSON nhe, khong can DB.
         self.config_path = Path(config_path)
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _clamp(self, value: Any, minimum: float, maximum: float, fallback: float) -> float:
+        # Chuan hoa gia tri so de tranh setting vuot mien hop le.
         try:
             numeric_value = float(value)
         except (TypeError, ValueError):
@@ -30,6 +36,7 @@ class SettingsService:
         return max(minimum, min(maximum, numeric_value))
 
     def _normalize_bool(self, value: Any, fallback: bool) -> bool:
+        # Ho tro ca bool thuan va string tu payload frontend/API.
         if isinstance(value, bool):
             return value
         if isinstance(value, str):
@@ -41,6 +48,8 @@ class SettingsService:
         return fallback
 
     def normalize(self, payload: dict[str, Any] | None) -> dict[str, float | bool]:
+        # Day la cua vao chung cho load/save/reset:
+        # moi setting deu duoc ep vao dung kieu va dung mien gia tri.
         source = payload or {}
         return {
             "confidence_threshold": self._clamp(
@@ -48,6 +57,12 @@ class SettingsService:
                 minimum=0.25,
                 maximum=0.95,
                 fallback=DEFAULT_AI_SETTINGS["confidence_threshold"],
+            ),
+            "phone_conf_threshold": self._clamp(
+                source.get("phone_conf_threshold"),
+                minimum=0.1,
+                maximum=0.8,
+                fallback=DEFAULT_AI_SETTINGS["phone_conf_threshold"],
             ),
             "extraction_interval_seconds": self._clamp(
                 source.get("extraction_interval_seconds"),
@@ -69,6 +84,10 @@ class SettingsService:
                 source.get("enable_cell_phone_alerts"),
                 fallback=bool(DEFAULT_AI_SETTINGS["enable_cell_phone_alerts"]),
             ),
+            "enable_face_missing_alerts": self._normalize_bool(
+                source.get("enable_face_missing_alerts"),
+                fallback=bool(DEFAULT_AI_SETTINGS["enable_face_missing_alerts"]),
+            ),
             "enable_multiple_people_alerts": self._normalize_bool(
                 source.get("enable_multiple_people_alerts"),
                 fallback=bool(DEFAULT_AI_SETTINGS["enable_multiple_people_alerts"]),
@@ -76,6 +95,7 @@ class SettingsService:
         }
 
     def load(self) -> dict[str, float | bool]:
+        # Gia tri "dang dung that" cua app duoc doc tu file nay, khong phai truc tiep tu DEFAULT_AI_SETTINGS.
         if not self.config_path.exists():
             return dict(DEFAULT_AI_SETTINGS)
 
@@ -86,6 +106,7 @@ class SettingsService:
         return self.normalize(payload)
 
     def save(self, payload: dict[str, Any]) -> dict[str, float | bool]:
+        # Frontend luu slider/toggle se di qua day roi moi ghi xuong data/ai_settings.json.
         normalized = self.normalize(payload)
         self.config_path.write_text(
             json.dumps(normalized, ensure_ascii=False, indent=2),
@@ -94,6 +115,7 @@ class SettingsService:
         return normalized
 
     def reset(self) -> dict[str, float | bool]:
+        # Dua file setting ve bo mac dinh trong code.
         return self.save(DEFAULT_AI_SETTINGS)
 
 

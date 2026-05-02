@@ -29,6 +29,7 @@ except ImportError:  # pragma: no cover
 
 class SQLStorageService:
     def _teacher_review_payload(self, decision: str | None, decided_at: datetime | None) -> dict[str, Any]:
+        # Chuan hoa teacher decision ve mot payload thong nhat de UI/API de dung lai.
         normalized = str(decision or "").strip().lower()
         if normalized not in {"confirmed", "dismissed"}:
             normalized = "pending"
@@ -44,6 +45,7 @@ class SQLStorageService:
         }
 
     def _risk_rank(self, risk: str | None) -> int:
+        # Helper de so sanh/cap nhat risk theo thu tu high > medium > low.
         return {"high": 3, "medium": 2, "low": 1}.get(str(risk or "low"), 1)
 
     def _merge_risk(self, left: str | None, right: str | None) -> str:
@@ -58,12 +60,14 @@ class SQLStorageService:
         return risk
 
     def _normalize_candidate_id(self, raw_value: Any) -> str:
+        # Loai bo UNKNOWN/rong de tranh ghi rac vao bang lich su.
         candidate_id = str(raw_value or "").strip()
         if not candidate_id or candidate_id == "UNKNOWN":
             return ""
         return candidate_id
 
     def _normalize_behaviors(self, raw_value: Any) -> list[str]:
+        # Chuan hoa danh sach behavior de tranh trung lap khi merge lich su.
         if not isinstance(raw_value, list):
             return []
         normalized: list[str] = []
@@ -92,6 +96,7 @@ class SQLStorageService:
         return normalized if normalized else ""
 
     def _compute_file_sha256(self, file_path: str | Path | None) -> str:
+        # Hash video duoc dung de nhan dien video trung khi backfill/luu DB.
         if not file_path:
             return ""
         target_path = Path(file_path)
@@ -116,6 +121,7 @@ class SQLStorageService:
         result_payload: dict[str, Any] | None = None,
         upload_info: dict[str, Any] | None = None,
     ) -> str:
+        # Uu tien video_hash co san; neu khong co thi tinh lai tu file video.
         payload_hash = self._normalize_video_hash((result_payload or {}).get("video_hash"))
         if payload_hash:
             return payload_hash
@@ -127,6 +133,8 @@ class SQLStorageService:
         return self._compute_file_sha256(video_path)
 
     def _build_candidate_rollups(self, result_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        # Bien ket qua mot lan review thanh "tong hop theo candidate"
+        # de cap nhat CandidateHistory de dang hon.
         summary = result_payload.get("summary", {}) or {}
         students_report = result_payload.get("students_report") or summary.get("students_report") or []
         incidents = result_payload.get("incidents", []) or []
@@ -184,6 +192,7 @@ class SQLStorageService:
         return rollups
 
     def _candidate_profiles_from_result(self, result_payload: dict[str, Any]) -> dict[str, dict[str, str]]:
+        # Rut profile candidate tu students_report/primary_candidate de bo sung vao incidents.
         summary = result_payload.get("summary", {}) or {}
         students_report = result_payload.get("students_report") or summary.get("students_report") or []
         primary_candidate = result_payload.get("primary_candidate") or summary.get("primary_candidate") or {}
@@ -215,6 +224,7 @@ class SQLStorageService:
         return profiles
 
     def _infer_review_candidate_identity(self, result_payload: dict[str, Any]) -> dict[str, str] | None:
+        # Fallback xac dinh candidate chinh cua lan review khi incident chua mang du thong tin.
         profiles = self._candidate_profiles_from_result(result_payload)
         if len(profiles) == 1:
             return next(iter(profiles.values()))
@@ -241,6 +251,7 @@ class SQLStorageService:
         incidents: list[dict[str, Any]],
         result_payload: dict[str, Any],
     ) -> list[dict[str, Any]]:
+        # Dam bao moi incident, neu co the, deu mang candidate_id/name/email/room day du.
         if not incidents:
             return []
 
@@ -278,6 +289,7 @@ class SQLStorageService:
         return enriched_incidents
 
     def _build_review_payload(self, review, incidents: list[dict[str, Any]]) -> dict[str, Any]:
+        # Dung trong backfill/rebuild khi can tai tao payload JSON tu ban ghi SQL.
         summary = self._parse_json_text(review.summary_json)
         return {
             "video_path": review.video_path,
@@ -289,6 +301,7 @@ class SQLStorageService:
         }
 
     def initialize(self) -> bool:
+        # Khoi tao SQLAlchemy engine/session manager.
         if not SQL_DRIVER_READY or db_session_manager is None:
             return False
         return db_session_manager.initialize()
@@ -310,6 +323,7 @@ class SQLStorageService:
         }
 
     def save_upload(self, upload_info: dict[str, Any]) -> int | None:
+        # Luu metadata file upload vao bang uploaded_videos.
         if not self.is_available() or select is None or UploadedVideo is None:
             return None
 
@@ -345,6 +359,7 @@ class SQLStorageService:
             return None
 
     def _resolve_upload_id(self, session, upload_info: dict[str, Any] | None, video_path: str) -> int | None:
+        # Tim upload_id de lien ket review voi uploaded_videos neu co the.
         if select is None or UploadedVideo is None:
             return None
         if upload_info:
@@ -370,6 +385,7 @@ class SQLStorageService:
         return int(upload.id) if upload is not None else None
 
     def _review_exists_for_result(self, session, result_path: str, video_path: str) -> bool:
+        # Helper cu/bo tro de tranh ghi trung mot review khi co result_path/video_path giong nhau.
         if select is None or ReviewResult is None:
             return False
         normalized_result_path = str(result_path or "").strip()
@@ -385,6 +401,7 @@ class SQLStorageService:
         return False
 
     def _has_prior_review_for_video_hash(self, session, video_hash: str) -> bool:
+        # Neu video hash da tung co trong DB thi co the day la video trung/backfill lap lai.
         normalized_hash = self._normalize_video_hash(video_hash)
         if not normalized_hash or select is None or ReviewResult is None:
             return False
@@ -398,6 +415,7 @@ class SQLStorageService:
         review_created_at: datetime,
         candidate_rollups: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
+        # Cap nhat bang CandidateHistory tu ket qua tong hop cua mot lan review.
         if select is None or CandidateHistory is None:
             return {}
 
@@ -451,6 +469,7 @@ class SQLStorageService:
         incidents: list[dict[str, Any]],
         histories_by_candidate_id: dict[str, Any],
     ) -> None:
+        # Ghi tung incident xuong lich su theo candidate de co the truy van ve sau.
         if CandidateIncidentHistory is None:
             return
 
@@ -481,6 +500,7 @@ class SQLStorageService:
             )
 
     def _sync_candidate_history_last_review_refs(self, session, candidate_ids: set[str] | None = None) -> int:
+        # Sau khi co incidents, dong bo last_review_id/last_seen_at ve lan review moi nhat cua tung candidate.
         if select is None or CandidateHistory is None or ReviewIncident is None or ReviewResult is None:
             return 0
 
@@ -541,6 +561,11 @@ class SQLStorageService:
         return updated_count
 
     def save_review_result(self, result_payload: dict[str, Any], upload_info: dict[str, Any] | None = None) -> int | None:
+        # Luong luu DB chinh:
+        # - luu review_results
+        # - luu review_incidents
+        # - cap nhat candidate_histories
+        # - luu candidate_incident_histories
         if (
             not self.is_available()
             or select is None
@@ -586,6 +611,7 @@ class SQLStorageService:
                 session.add(review)
                 session.flush()
 
+                # Ghi tung incident goc cua lan review vao bang review_incidents.
                 for incident in incidents:
                     event = ReviewIncident(
                         review_id=int(review.id),
@@ -604,6 +630,7 @@ class SQLStorageService:
                     )
                     session.add(event)
 
+                # Video trung thi van luu review moi, nhung bo qua cong don lich su candidate.
                 if is_duplicate_video:
                     session.flush()
                     self._sync_candidate_history_last_review_refs(
@@ -613,6 +640,7 @@ class SQLStorageService:
                     session.flush()
                     return int(review.id)
 
+                # Video moi hop le thi cong don vao lich su candidate.
                 review_created_at = review.created_at or datetime.now(timezone.utc)
                 histories_by_candidate_id = self._apply_candidate_rollups(
                     session=session,
@@ -633,6 +661,7 @@ class SQLStorageService:
             return None
 
     def _parse_json_text(self, raw_value: str | None) -> dict[str, Any]:
+        # Cac cot summary_json/engines_json duoc luu dang text trong SQL.
         if not raw_value:
             return {}
         try:
@@ -655,7 +684,36 @@ class SQLStorageService:
             return ""
         return created_at.isoformat()
 
+    def _review_to_payload(self, session, review) -> dict[str, Any]:
+        incidents = [
+            incident.to_payload()
+            for incident in session.scalars(
+                select(ReviewIncident).where(ReviewIncident.review_id == review.id).order_by(ReviewIncident.id.asc())
+            ).all()
+        ]
+        summary_payload = self._parse_json_text(review.summary_json)
+        video_name = Path(review.video_path).name if getattr(review, "video_path", None) else ""
+        return {
+            "status": review.status,
+            "analysis_mode": review.analysis_mode,
+            "video_path": review.video_path,
+            "video_name": video_name,
+            "summary": summary_payload,
+            "students_report": summary_payload.get("students_report", []),
+            "primary_candidate": summary_payload.get("primary_candidate"),
+            "incidents": incidents,
+            "engines": self._parse_json_text(review.engines_json),
+            "message": review.message,
+            "teacher_review": self._teacher_review_payload(
+                decision=getattr(review, "teacher_decision", None),
+                decided_at=getattr(review, "teacher_decided_at", None),
+            ),
+            "result_path": review.result_path,
+            "created_at": self._normalize_created_at(review.created_at),
+        }
+
     def get_latest_review_result(self) -> dict[str, Any] | None:
+        # Phuc vu dashboard review panel: lay lan review moi nhat trong SQL.
         if not self.is_available() or select is None or ReviewResult is None or ReviewIncident is None:
             return None
 
@@ -664,30 +722,7 @@ class SQLStorageService:
                 review = session.scalar(select(ReviewResult).order_by(ReviewResult.created_at.desc()))
                 if review is None:
                     return None
-                incidents = [
-                    incident.to_payload()
-                    for incident in session.scalars(
-                        select(ReviewIncident).where(ReviewIncident.review_id == review.id).order_by(ReviewIncident.id.asc())
-                    ).all()
-                ]
-                summary_payload = self._parse_json_text(review.summary_json)
-                return {
-                    "status": review.status,
-                    "analysis_mode": review.analysis_mode,
-                    "video_path": review.video_path,
-                    "summary": summary_payload,
-                    "students_report": summary_payload.get("students_report", []),
-                    "primary_candidate": summary_payload.get("primary_candidate"),
-                    "incidents": incidents,
-                    "engines": self._parse_json_text(review.engines_json),
-                    "message": review.message,
-                    "teacher_review": self._teacher_review_payload(
-                        decision=getattr(review, "teacher_decision", None),
-                        decided_at=getattr(review, "teacher_decided_at", None),
-                    ),
-                    "result_path": review.result_path,
-                    "created_at": self._normalize_created_at(review.created_at),
-                }
+                return self._review_to_payload(session, review)
         except (SQLAlchemyError, RuntimeError):
             return None
 
@@ -698,6 +733,7 @@ class SQLStorageService:
         result_path: str = "",
         video_path: str = "",
     ) -> dict[str, Any] | None:
+        # Teacher co the mark confirmed/dismissed cho mot lan review da luu trong DB.
         if not self.is_available() or select is None or ReviewResult is None:
             return None
 
@@ -733,6 +769,7 @@ class SQLStorageService:
             return None
 
     def list_recent_reviews(self, limit: int = 5) -> list[dict[str, Any]]:
+        # Feed du lieu nhe cho khu recent results tren dashboard.
         if not self.is_available() or select is None or ReviewResult is None:
             return []
 
@@ -741,28 +778,12 @@ class SQLStorageService:
                 rows = session.scalars(
                     select(ReviewResult).order_by(ReviewResult.created_at.desc()).limit(max(1, limit))
                 ).all()
-
-                results: list[dict[str, Any]] = []
-                for row in rows:
-                    result_filename = ""
-                    if row.result_path:
-                        result_filename = Path(row.result_path).name
-                    elif row.video_path:
-                        result_filename = f"{Path(row.video_path).stem}.json"
-                    results.append(
-                        {
-                            "filename": result_filename,
-                            "status": row.status,
-                            "violations": row.total_violations,
-                            "analysis_mode": row.analysis_mode,
-                            "created_at": self._normalize_created_at(row.created_at),
-                        }
-                    )
-                return results
+                return [self._review_to_payload(session, row) for row in rows]
         except (SQLAlchemyError, RuntimeError):
             return []
 
     def list_recent_incident_timestamps(self, hours: int = 24) -> list[str]:
+        # Lay moc thoi gian incidents de ve bieu do trend tren dashboard.
         if not self.is_available() or select is None or ReviewResult is None or ReviewIncident is None:
             return []
 
@@ -786,6 +807,7 @@ class SQLStorageService:
             return []
 
     def list_candidate_histories(self, limit: int | None = None) -> list[dict[str, Any]]:
+        # Doc bang lich su tong hop theo thi sinh cho tab Students.
         if not self.is_available() or select is None or CandidateHistory is None:
             return []
 
@@ -850,6 +872,7 @@ class SQLStorageService:
             return []
 
     def list_candidate_incidents(self, candidate_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        # Doc lich su chi tiet cac incident cua mot candidate.
         if not self.is_available() or select is None or CandidateIncidentHistory is None:
             return []
 
@@ -870,6 +893,7 @@ class SQLStorageService:
             return []
 
     def backfill_video_hashes(self) -> int:
+        # Bo sung hash cho cac ban ghi cu neu truoc day chua luu video_hash.
         if not self.is_available() or select is None or UploadedVideo is None or ReviewResult is None:
             return 0
 
@@ -908,6 +932,8 @@ class SQLStorageService:
         return updated_count
 
     def rebuild_candidate_histories(self) -> int:
+        # Tai tao toan bo candidate_histories va candidate_incident_histories tu review_results/review_incidents.
+        # Ham nay huu ich khi khoi dong app, khi doi logic, hoac khi can "repair" du lieu lich su.
         if (
             not self.is_available()
             or select is None
@@ -942,6 +968,7 @@ class SQLStorageService:
                         .order_by(ReviewIncident.id.asc())
                     ).all()
                     incidents = [incident.to_payload() for incident in incident_rows]
+                    # Dung payload tam de enrich lai candidate context va xay lai rollup.
                     payload = self._build_review_payload(review, incidents)
                     enriched_incidents = self._enrich_incidents_with_candidate_context(
                         payload.get("incidents", []),

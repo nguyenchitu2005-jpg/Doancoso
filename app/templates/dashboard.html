@@ -275,28 +275,28 @@
                 <div class="panel-header">
                   <div>
                     <p class="panel-title">Tải lên Video Hậu Kiểm Mới</p>
-                    <p class="panel-subtitle">Định dạng hỗ trợ: .mp4, .avi</p>
+                    <p class="panel-subtitle">Co the chon nhieu video cung luc. Dinh dang ho tro: .mp4, .avi, .mov, .mkv</p>
                   </div>
                 </div>
 
                 <form class="upload-form" action="{{ url_for('upload_review_video') }}" method="post" enctype="multipart/form-data">
-                  <input id="review-video-file" class="file-input" type="file" name="video_file" accept=".mp4,.avi,.mov,.mkv" required>
+                  <input id="review-video-file" class="file-input" type="file" name="video_files" accept=".mp4,.avi,.mov,.mkv" multiple required>
                   <div class="upload-dropzone">
                     <span class="material-symbols-outlined">cloud_upload</span>
                     <p>
                       Kéo và thả tệp vào đây hoặc
                       <button type="button" class="text-link upload-trigger" data-file-trigger="review-video-file">chọn từ máy tính</button>
                     </p>
-                    <small>Dung lượng tối đa 500MB</small>
+                      <small>Co the tai len va hau kiem nhieu video trong cung mot lan gui</small>
                   </div>
                   <div class="form-actions">
                     <div class="selected-file-block">
                       <div class="selected-file-row">
-                        <p id="selected-file-name" class="selected-file-name">Chưa chọn tệp nào</p>
+                        <p id="selected-file-name" class="selected-file-name">Chua chon video nao</p>
                         <button id="clear-selected-file" class="file-clear-button" type="button" hidden aria-label="Hủy tệp đã chọn">x</button>
                       </div>
                     </div>
-                    <button id="upload-submit-button" class="primary-button" type="submit" disabled>Tải video</button>
+                     <button id="upload-submit-button" class="primary-button" type="submit" disabled>Tai va xu ly video</button>
                   </div>
                 </form>
 
@@ -323,6 +323,36 @@
                   </div>
                 {% endif %}
 
+                {% if recent_results %}
+                  <section class="review-history-panel">
+                    <div class="panel-header">
+                      <div>
+                        <p class="panel-title">Danh Sach Video Da Xu Ly</p>
+                        <p class="panel-subtitle">Moi video la mot phien hau kiem rieng. Chon de xem chi tiet.</p>
+                      </div>
+                    </div>
+                    <div id="review-session-list" class="review-session-list">
+                      {% for result in recent_results %}
+                        <button
+                          class="review-session-item {% if loop.first %}is-active{% endif %}"
+                          type="button"
+                          data-result-path="{{ result.result_path or '' }}"
+                          data-video-path="{{ result.video_path or '' }}"
+                        >
+                          <div class="review-session-copy">
+                            <strong>{{ result.video_name or "Video khong xac dinh" }}</strong>
+                            <p>{{ result.review_candidate.name or "Unknown Candidate" }}</p>
+                          </div>
+                          <div class="review-session-meta">
+                            <span class="chip">{{ result.incident_count }} su co</span>
+                            <small>{{ result.created_at_label }}</small>
+                          </div>
+                        </button>
+                      {% endfor %}
+                    </div>
+                  </section>
+                {% endif %}
+
               </article>
 
               <article id="review-video-stage" class="video-stage {% if latest_review.video_url %}has-video{% endif %}">
@@ -337,34 +367,37 @@
                   </span>
                 </div>
 
-                {% if latest_review.video_url %}
-                  <video id="review-video-player" class="review-video-player" controls preload="metadata" src="{{ latest_review.video_url }}"></video>
-                {% else %}
-                  <div id="review-stage-placeholder" class="stage-scene">
-                    <div class="scene-glow"></div>
-                    <div class="scene-figure figure-left"></div>
-                    <div class="scene-figure figure-right"></div>
-                    <div class="scene-desk"></div>
-                  </div>
-                {% endif %}
+                <video
+                  id="review-video-player"
+                  class="review-video-player"
+                  controls
+                  preload="metadata"
+                  {% if latest_review.video_url %}src="{{ latest_review.video_url }}"{% else %}hidden{% endif %}
+                ></video>
+                <div id="review-stage-placeholder" class="stage-scene" {% if latest_review.video_url %}hidden{% endif %}>
+                  <div class="scene-glow"></div>
+                  <div class="scene-figure figure-left"></div>
+                  <div class="scene-figure figure-right"></div>
+                  <div class="scene-desk"></div>
+                </div>
                 <video id="live-camera-player" class="review-video-player live-camera-player" autoplay playsinline muted hidden></video>
               </article>
 
               <div class="candidate-grid">
                 <article class="panel candidate-card">
                   <div class="identity-row">
-                    <div class="avatar portrait">{{ review_candidate.avatar }}</div>
+                    <div id="review-candidate-avatar" class="avatar portrait">{{ review_candidate.avatar }}</div>
                     <div>
-                      <h3>{{ review_candidate.name }}</h3>
-                      <p>Ma sinh vien: #{{ review_candidate.candidate_id }}</p>
+                      <h3 id="review-candidate-name">{{ review_candidate.name }}</h3>
+                      <p id="review-candidate-id">Ma sinh vien: #{{ review_candidate.candidate_id }}</p>
                     </div>
                   </div>
 
                   <div class="detail-grid">
-                    <div><p class="micro-label">Email</p><strong>{{ review_candidate.email or "N/A" }}</strong></div>
-                    <div><p class="micro-label">Phong thi</p><strong>{{ review_candidate.room or "Unknown Room" }}</strong></div>
-                    <div><p class="micro-label">Tong canh bao</p><strong>{{ review_candidate.alerts }}</strong></div>
-                    <div><p class="micro-label">Trang thai thiet bi</p><strong class="safe-copy">{{ review_candidate.device_status }}</strong></div>
+                    <div><p class="micro-label">Email</p><strong id="review-candidate-email">{{ review_candidate.email or "N/A" }}</strong></div>
+                    <div><p class="micro-label">Phong thi</p><strong id="review-candidate-room">{{ review_candidate.room or "Unknown Room" }}</strong></div>
+                    <div><p class="micro-label">Tong canh bao</p><strong id="review-candidate-alerts">{{ review_candidate.alerts }}</strong></div>
+                    <div><p class="micro-label">Trang thai thiet bi</p><strong id="review-candidate-device-status" class="safe-copy">{{ review_candidate.device_status }}</strong></div>
                   </div>
                 </article>
 
@@ -373,8 +406,8 @@
                   class="risk-card risk-card-{{ latest_review.teacher_review.status or 'pending' }}"
                 >
                   <p class="micro-label">Danh gia rui ro</p>
-                  <strong>{{ review_candidate.risk_label }}</strong>
-                  <p>{{ review_risk_message }}</p>
+                  <strong id="review-risk-label">{{ review_candidate.risk_label }}</strong>
+                  <p id="review-risk-message">{{ review_risk_message }}</p>
                   <div class="review-decision-panel">
                     <div class="review-decision-actions">
                       <button
@@ -411,7 +444,7 @@
                     <small>{{ incident.time }}</small>
                     <p>Hanh vi nghi ngo gian lan</p>
                     {% if incident.snapshot_url %}
-                      <img class="incident-thumb" src="{{ incident.snapshot_url }}" alt="Snapshot vi pham tai {{ incident.time }}">
+                      <img class="incident-thumb" src="{{ incident.snapshot_url }}" alt="Snapshot vi pham tai {{ incident.time }}" loading="lazy" decoding="async">
                     {% endif %}
                   </article>
                 {% else %}
@@ -541,6 +574,16 @@
 
               <div class="setting-block">
                 <div class="setting-copy">
+                  <p>Phone Threshold</p>
+                  <strong id="phone-confidence-value">{{ "%.2f"|format(ai_settings["phone_conf_threshold"]) }}</strong>
+                </div>
+                <input id="phone-confidence-range" type="range" min="0.10" max="0.80" step="0.01" value="{{ ai_settings['phone_conf_threshold'] }}">
+                <div class="range-labels"><small>Nhay hon cho dien thoai</small><small>Chat hon cho dien thoai</small></div>
+                <div class="callout-box">Nguong rieng cho nhan dien dien thoai. Gia tri thap hon se de bat duoc dien thoai nho hon, nhung co the tang canh bao nham.</div>
+              </div>
+
+              <div class="setting-block">
+                <div class="setting-copy">
                   <p>Extraction Interval</p>
                   <strong><span id="interval-value">{{ "%.1f"|format(ai_settings["extraction_interval_seconds"]) }}</span> giây</strong>
                 </div>
@@ -587,8 +630,16 @@
                 </label>
                 <label class="toggle-row">
                   <div>
-                    <p>Trao đổi nhóm</p>
-                    <small>Phát hiện nhiều người trong khung hình.</small>
+                    <p>Vắng mặt khỏi khung hình</p>
+                    <small>Cảnh báo khi không còn thấy khuôn mặt thí sinh.</small>
+                  </div>
+                  <input id="toggle-face-missing-alerts" type="checkbox" {% if ai_settings["enable_face_missing_alerts"] %}checked{% endif %}>
+                  <span class="toggle-ui"></span>
+                </label>
+                <label class="toggle-row">
+                  <div>
+                    <p>Trao Ä‘á»•i nhÃ³m</p>
+                    <small>PhÃ¡t hiá»‡n nhiá»u ngÆ°á»i trong khung hÃ¬nh.</small>
                   </div>
                   <input id="toggle-multiple-people-alerts" type="checkbox" {% if ai_settings["enable_multiple_people_alerts"] %}checked{% endif %}>
                   <span class="toggle-ui"></span>
@@ -635,5 +686,6 @@
 {% block scripts %}
   <script id="dashboard-data" type="application/json">{{ dashboard | tojson }}</script>
   <script id="review-data" type="application/json">{{ latest_review | tojson }}</script>
+  <script id="review-history-data" type="application/json">{{ recent_results | tojson }}</script>
   <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260416a"></script>
 {% endblock %}

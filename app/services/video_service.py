@@ -31,37 +31,44 @@ class VideoService:
         return f"{size:.1f} {unit}"
 
     async def save_upload(self, upload: UploadFile) -> dict:
-        original_name = upload.filename or ""
-        extension = Path(original_name).suffix.lower()
-        if not original_name:
-            raise ValueError("Vui lòng chọn một video để tải lên.")
-        if extension not in self.allowed_extensions:
-            raise ValueError("Định dạng không hợp lệ. Chỉ hỗ trợ .mp4, .avi, .mov, .mkv.")
+        destination: Path | None = None
+        try:
+            original_name = upload.filename or ""
+            extension = Path(original_name).suffix.lower()
+            if not original_name:
+                raise ValueError("Vui lòng chọn một video để tải lên.")
+            if extension not in self.allowed_extensions:
+                raise ValueError("Định dạng không hợp lệ. Chỉ hỗ trợ .mp4, .avi, .mov, .mkv.")
 
-        safe_name = self._sanitize_name(original_name)
-        stored_name = f"{uuid4().hex[:8]}_{safe_name}"
-        destination = self.build_upload_path(stored_name)
+            safe_name = self._sanitize_name(original_name)
+            stored_name = f"{uuid4().hex[:8]}_{safe_name}"
+            destination = self.build_upload_path(stored_name)
 
-        total_size = 0
-        file_hash = hashlib.sha256()
-        with destination.open("wb") as output_file:
-            while True:
-                chunk = await upload.read(1024 * 1024)
-                if not chunk:
-                    break
-                total_size += len(chunk)
-                file_hash.update(chunk)
-                output_file.write(chunk)
-        await upload.close()
+            total_size = 0
+            file_hash = hashlib.sha256()
+            with destination.open("wb") as output_file:
+                while True:
+                    chunk = await upload.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total_size += len(chunk)
+                    file_hash.update(chunk)
+                    output_file.write(chunk)
 
-        return {
-            "original_filename": original_name,
-            "stored_filename": stored_name,
-            "path": str(destination),
-            "content_hash": file_hash.hexdigest(),
-            "size_bytes": total_size,
-            "size_label": self._format_size(total_size),
-        }
+            return {
+                "original_filename": original_name,
+                "stored_filename": stored_name,
+                "path": str(destination),
+                "content_hash": file_hash.hexdigest(),
+                "size_bytes": total_size,
+                "size_label": self._format_size(total_size),
+            }
+        except Exception:
+            if destination is not None:
+                destination.unlink(missing_ok=True)
+            raise
+        finally:
+            await upload.close()
 
     def list_uploads(self, limit: int = 5) -> list[dict]:
         uploads = []

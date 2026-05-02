@@ -114,7 +114,7 @@ pip install -r requirements.txt
 weights/yolo11n.pt
 ```
 
-- Mặc định service đang dùng `yolo11n.pt`. Nếu không có file trong `weights/`, Ultralytics có thể tự tải model khi môi trường hỗ trợ.
+- Mặc định service đang dùng `yolo11n.pt`. Nếu không có file trong `weights/`, service sẽ fallback về tên model để Ultralytics tự tải khi môi trường hỗ trợ.
 
 ## Ghi chú
 

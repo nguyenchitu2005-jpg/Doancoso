@@ -37,10 +37,12 @@ VIETNAM_TZ = timezone(timedelta(hours=7))
 
 class SettingsPayload(BaseModel):
     confidence_threshold: float
+    phone_conf_threshold: float
     extraction_interval_seconds: float
     behavior_threshold: float
     enable_gaze_alerts: bool
     enable_cell_phone_alerts: bool
+    enable_face_missing_alerts: bool
     enable_multiple_people_alerts: bool
 
 
@@ -75,6 +77,123 @@ def _pick_primary_candidate_from_students(students: list[dict]) -> dict | None:
         "risk": str(top.get("risk") or "low"),
         "behaviors": list(top.get("behaviors") or []),
     }
+
+
+def _student_identity_key(student: dict) -> str:
+    candidate_id = str(student.get("candidate_id") or "").strip()
+    if candidate_id:
+        return candidate_id
+    email = str(student.get("email") or "").strip().lower()
+    if email:
+        return email
+    return str(student.get("name") or "").strip().lower()
+
+
+def _summarize_batch_names(names: list[str], limit: int = 3) -> str:
+    visible_names = [str(name).strip() for name in names if str(name).strip()][:limit]
+    if not visible_names:
+        return ""
+    remainder = len(names) - len(visible_names)
+    summary = ", ".join(visible_names)
+    if remainder > 0:
+        summary = f"{summary} (+{remainder})"
+    return summary
+
+
+def _build_batch_status(success_count: int, failure_count: int, warning_count: int = 0) -> str:
+    if success_count > 0 and failure_count == 0 and warning_count == 0:
+        return "success"
+    if success_count > 0 or warning_count > 0:
+        return "warning"
+    return "error"
+
+
+def _build_upload_batch_message(successful_uploads: list[dict], upload_failures: list[str]) -> str:
+    success_count = len(successful_uploads)
+    failure_count = len(upload_failures)
+    successful_names = [str(item.get("original_filename") or "") for item in successful_uploads]
+    failure_detail = _summarize_batch_names(upload_failures, limit=2)
+
+    if success_count == 0:
+        message = "Khong co video nao duoc tai len."
+        if failure_detail:
+            message = f"{message} Chi tiet: {failure_detail}."
+        return message
+
+    summary = _summarize_batch_names(successful_names)
+    message = f"Da tai len {success_count} video"
+    if summary:
+        message = f"{message}: {summary}."
+    else:
+        message = f"{message}."
+    if failure_count > 0:
+        message = f"{message} {failure_count} video tai len that bai."
+        if failure_detail:
+            message = f"{message} Chi tiet: {failure_detail}."
+    return message
+
+
+def _build_detection_batch_message(
+    detection_successes: list[str],
+    detection_warnings: list[str],
+    detection_failures: list[str],
+) -> str:
+    success_count = len(detection_successes)
+    warning_count = len(detection_warnings)
+    failure_count = len(detection_failures)
+    total_count = success_count + warning_count + failure_count
+
+    if total_count == 0:
+        return "Chua co video nao duoc dua vao hau kiem."
+
+    parts: list[str] = [f"Da xu ly {total_count} video"]
+    if success_count > 0:
+        parts.append(f"thanh cong {success_count}")
+    if warning_count > 0:
+        parts.append(f"canh bao {warning_count}")
+    if failure_count > 0:
+        parts.append(f"that bai {failure_count}")
+
+    detail_sources = detection_failures or detection_warnings
+    detail = _summarize_batch_names(detail_sources, limit=2)
+    message = ", ".join(parts) + "."
+    if detail:
+        message = f"{message} Chi tiet: {detail}."
+    return message
+
+
+def _merge_students_for_dashboard(latest_students: list[dict], historical_students: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    index_by_key: dict[str, int] = {}
+
+    for student in latest_students:
+        row = dict(student)
+        key = _student_identity_key(row)
+        if not key or key in index_by_key:
+            continue
+        index_by_key[key] = len(merged)
+        merged.append(row)
+
+    for student in historical_students:
+        row = dict(student)
+        key = _student_identity_key(row)
+        if not key:
+            continue
+        existing_index = index_by_key.get(key)
+        if existing_index is None:
+            index_by_key[key] = len(merged)
+            merged.append(row)
+            continue
+
+        existing = merged[existing_index]
+        if "teacher_review" not in existing and "teacher_review" in row:
+            existing["teacher_review"] = row["teacher_review"]
+        if not existing.get("room") and row.get("room"):
+            existing["room"] = row["room"]
+        if not existing.get("email") and row.get("email"):
+            existing["email"] = row["email"]
+
+    return merged
 
 
 def _risk_label_vi(risk: str) -> str:
@@ -312,8 +431,8 @@ def build_system_status(latest_review: dict, performance_metrics: dict[str, str]
     }
 
 
-def build_latest_review_payload(recent_uploads: list[dict]) -> dict:
-    latest_review = {
+def _empty_review_payload() -> dict[str, object]:
+    return {
         "status": "idle",
         "analysis_mode": "n/a",
         "video_name": None,
@@ -332,46 +451,109 @@ def build_latest_review_payload(recent_uploads: list[dict]) -> dict:
         },
         "message": "Chua co du lieu hau kiem.",
         "created_at": None,
+        "created_at_label": "Chua co moc xu ly.",
+        "incident_count": 0,
+        "review_candidate": None,
+        "review_risk_message": "Chua ghi nhan su co trong lan hau kiem gan nhat.",
     }
 
-    latest_result = sql_storage_service.get_latest_review_result() or detection_service.get_latest_result()
-    if latest_result is not None:
-        latest_review["status"] = latest_result.get("status", "unknown")
-        latest_review["analysis_mode"] = latest_result.get("analysis_mode", "n/a")
-        latest_review["summary"] = latest_result.get("summary", latest_review["summary"])
-        latest_review["incidents"] = latest_result.get("incidents", [])
-        latest_review["students_report"] = latest_result.get(
-            "students_report",
-            latest_review["summary"].get("students_report", []),
+def _format_review_created_at_label(created_at: str | None) -> str:
+    if not created_at:
+        return "Chua co moc xu ly."
+    try:
+        normalized = str(created_at).replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized).strftime("%d/%m/%Y %H:%M:%S")
+    except ValueError:
+        return str(created_at)
+
+
+def _hydrate_review_payload(source: dict | None = None) -> dict:
+    latest_review = _empty_review_payload()
+    if isinstance(source, dict):
+        latest_review["status"] = source.get("status", latest_review["status"])
+        latest_review["analysis_mode"] = source.get("analysis_mode", latest_review["analysis_mode"])
+        latest_review["summary"] = source.get("summary", latest_review["summary"])
+        latest_review["incidents"] = list(source.get("incidents", []))
+        latest_review["students_report"] = list(
+            source.get("students_report", latest_review["summary"].get("students_report", []))
         )
-        latest_review["engines"] = latest_result.get("engines", {})
-        latest_review["teacher_review"] = latest_result.get("teacher_review", latest_review["teacher_review"])
-        latest_review["primary_candidate"] = latest_result.get(
+        latest_review["engines"] = source.get("engines", {})
+        latest_review["teacher_review"] = source.get("teacher_review", latest_review["teacher_review"])
+        latest_review["primary_candidate"] = source.get(
             "primary_candidate",
             latest_review["summary"].get("primary_candidate"),
         )
-        if latest_review["primary_candidate"] is None:
-            latest_review["primary_candidate"] = _pick_primary_candidate_from_students(latest_review["students_report"])
-        latest_review["message"] = latest_result.get("message", latest_review["message"])
-        latest_review["created_at"] = latest_result.get("created_at")
-        latest_review["result_path"] = latest_result.get("result_path")
-        latest_review["video_path"] = latest_result.get("video_path")
+        latest_review["message"] = source.get("message", latest_review["message"])
+        latest_review["created_at"] = source.get("created_at")
+        latest_review["result_path"] = source.get("result_path")
+        latest_review["video_path"] = source.get("video_path")
+        latest_review["video_name"] = source.get("video_name")
+        latest_review["video_url"] = source.get("video_url")
 
-        video_path = latest_result.get("video_path")
-        if video_path:
-            video_file = Path(video_path)
-            latest_review["video_name"] = video_file.name
-            if video_file.exists():
-                latest_review["video_url"] = f"/uploads/{video_file.name}"
-        return latest_review
+    if latest_review["primary_candidate"] is None:
+        latest_review["primary_candidate"] = _pick_primary_candidate_from_students(latest_review["students_report"])
 
-    if recent_uploads:
-        latest_file = recent_uploads[0]["filename"]
-        latest_review["video_name"] = latest_file
-        latest_review["video_url"] = f"/uploads/{latest_file}"
-        latest_review["message"] = "Video da tai len, chua co ket qua phan tich."
+    video_path = latest_review.get("video_path")
+    if video_path:
+        video_file = Path(str(video_path))
+        latest_review["video_name"] = latest_review.get("video_name") or video_file.name
+        if video_file.exists():
+            latest_review["video_url"] = f"/uploads/{video_file.name}"
 
+    review_candidate = latest_review.get("primary_candidate") or {
+        "candidate_id": "UNKNOWN",
+        "name": "Unknown Candidate",
+        "email": "",
+        "room": "",
+        "alerts": 0,
+        "risk": "low",
+        "behaviors": [],
+    }
+    review_candidate = dict(review_candidate)
+    review_candidate["risk_label"] = _risk_label_vi(str(review_candidate.get("risk") or "low"))
+    review_candidate["device_status"] = _review_device_status(latest_review)
+    review_candidate["behaviors"] = list(review_candidate.get("behaviors") or [])
+    review_candidate["avatar"] = "".join(
+        [part[0] for part in str(review_candidate.get("name") or "UC").split() if part][:2]
+    ).upper() or "UC"
+
+    incident_count = len(latest_review.get("incidents", []))
+    latest_review["incident_count"] = incident_count
+    latest_review["review_candidate"] = review_candidate
+    latest_review["review_risk_message"] = (
+        f"He thong da ghi nhan {incident_count} su co trong lan hau kiem nay."
+        if incident_count > 0
+        else "Chua ghi nhan su co trong lan hau kiem nay."
+    )
+    latest_review["created_at_label"] = _format_review_created_at_label(latest_review.get("created_at"))
     return latest_review
+
+
+def build_recent_review_payloads(recent_uploads: list[dict], limit: int = 5) -> list[dict]:
+    raw_results = sql_storage_service.list_recent_reviews(limit=limit) or detection_service.list_result_payloads(limit=limit)
+    if raw_results:
+        return [_hydrate_review_payload(item) for item in raw_results]
+
+    placeholders: list[dict] = []
+    for upload in recent_uploads[: max(1, limit)]:
+        filename = str(upload.get("filename") or "")
+        placeholders.append(
+            _hydrate_review_payload(
+                {
+                    "video_name": filename,
+                    "video_url": f"/uploads/{filename}",
+                    "video_path": str(video_service.build_upload_path(filename)) if filename else None,
+                    "message": "Video da tai len, chua co ket qua phan tich.",
+                }
+            )
+        )
+    return placeholders
+
+
+def build_latest_review_payload(recent_uploads: list[dict], recent_reviews: list[dict] | None = None) -> dict:
+    if recent_reviews:
+        return dict(recent_reviews[0])
+    return _hydrate_review_payload()
 
 
 def build_dashboard_context(request: Request) -> dict:
@@ -392,9 +574,9 @@ def build_dashboard_context(request: Request) -> dict:
         detection_feedback = {"status": detection_status, "message": detection_message}
 
     recent_uploads = video_service.list_uploads()
-    latest_review = build_latest_review_payload(recent_uploads)
+    recent_results = build_recent_review_payloads(recent_uploads, limit=8)
+    latest_review = build_latest_review_payload(recent_uploads, recent_results)
     ai_settings = get_ai_settings()
-    db_recent_results = sql_storage_service.list_recent_reviews(limit=5)
     historical_students = sql_storage_service.list_candidate_histories(limit=250)
     if not historical_students:
         historical_students = detection_service.list_historical_students()
@@ -405,34 +587,14 @@ def build_dashboard_context(request: Request) -> dict:
         high_risk = len([item for item in latest_students_report if item.get("risk") == "high"])
         dashboard_payload["overview"]["active_sessions"] = len(latest_students_report)
         dashboard_payload["overview"]["integrity_score"] = f"{max(0.0, 100.0 - (high_risk * 8.0)):.1f}%"
-    source_students = historical_students or latest_students_report
+    source_students = _merge_students_for_dashboard(latest_students_report, historical_students)
     dashboard_payload["students"] = [dict(student) for student in source_students]
     student_items = dashboard_payload.get("students", [])
     students_total = len(student_items)
     students_high_risk = len([item for item in student_items if str(item.get("risk") or "") == "high"])
 
-    review_candidate = latest_review.get("primary_candidate") or _pick_primary_candidate_from_students(latest_students_report) or {
-        "candidate_id": "UNKNOWN",
-        "name": "Unknown Candidate",
-        "email": "",
-        "room": "",
-        "alerts": 0,
-        "risk": "low",
-        "behaviors": [],
-    }
-    review_candidate["risk_label"] = _risk_label_vi(str(review_candidate.get("risk") or "low"))
-    review_candidate["device_status"] = _review_device_status(latest_review)
-    review_candidate["behaviors"] = list(review_candidate.get("behaviors") or [])
-    review_candidate["avatar"] = "".join(
-        [part[0] for part in str(review_candidate.get("name") or "UC").split() if part][:2]
-    ).upper() or "UC"
-
-    review_incident_count = len(latest_review.get("incidents", []))
-    review_risk_message = (
-        f"He thong da ghi nhan {review_incident_count} su co trong lan hau kiem gan nhat."
-        if review_incident_count > 0
-        else "Chua ghi nhan su co trong lan hau kiem gan nhat."
-    )
+    review_candidate = dict(latest_review.get("review_candidate") or {})
+    review_risk_message = str(latest_review.get("review_risk_message") or "Chua ghi nhan su co trong lan hau kiem nay.")
     performance_metrics = build_performance_metrics(latest_review)
     recent_incident_timestamps = sql_storage_service.list_recent_incident_timestamps(hours=24)
     violation_trend = build_violation_trend(
@@ -450,7 +612,7 @@ def build_dashboard_context(request: Request) -> dict:
         "upload_feedback": upload_feedback,
         "detection_feedback": detection_feedback,
         "recent_uploads": recent_uploads,
-        "recent_results": db_recent_results or detection_service.list_results(),
+        "recent_results": recent_results,
         "latest_review": latest_review,
         "review_candidate": review_candidate,
         "review_risk_message": review_risk_message,
@@ -629,32 +791,65 @@ async def export_students_excel(request: Request) -> Response:
 
 
 @router.post("/review/upload", name="upload_review_video", tags=["web"])
-async def upload_review_video(video_file: UploadFile = File(...)) -> RedirectResponse:
+async def upload_review_video(video_files: list[UploadFile] = File(...)) -> RedirectResponse:
     try:
-        upload_info = await video_service.save_upload(video_file)
-        sql_storage_service.save_upload(upload_info)
-        upload_status = "success"
-        upload_message = f"Tai len thanh cong: {upload_info['original_filename']} ({upload_info['size_label']})."
+        if not video_files:
+            raise ValueError("Vui long chon it nhat 1 video de tai len.")
 
-        try:
-            detection_service.apply_runtime_settings(get_ai_settings())
-            detection_info = detection_service.detect_from_video(upload_info["path"])
-            sql_storage_service.save_review_result(detection_info, upload_info=upload_info)
-            detection_status = "success" if detection_info["status"] == "completed" else "warning"
-            detection_message = detection_info["message"]
-        except (RuntimeError, FileNotFoundError, ValueError) as detection_exc:
-            detection_status = "error"
-            detection_message = str(detection_exc)
+        successful_uploads: list[dict] = []
+        upload_failures: list[str] = []
+        detection_successes: list[str] = []
+        detection_warnings: list[str] = []
+        detection_failures: list[str] = []
 
-        query = urlencode(
-            {
-                "tab": "review",
-                "upload_status": upload_status,
-                "upload_message": upload_message,
-                "detection_status": detection_status,
-                "detection_message": detection_message,
-            }
-        )
+        detection_service.apply_runtime_settings(get_ai_settings())
+
+        for video_file in video_files:
+            try:
+                upload_info = await video_service.save_upload(video_file)
+            except (ValueError, OSError) as upload_exc:
+                file_name = str(getattr(video_file, "filename", "") or "video_khong_xac_dinh")
+                upload_failures.append(f"{file_name}: {upload_exc}")
+                continue
+
+            successful_uploads.append(upload_info)
+            sql_storage_service.save_upload(upload_info)
+
+            try:
+                detection_info = detection_service.detect_from_video(upload_info["path"])
+                sql_storage_service.save_review_result(detection_info, upload_info=upload_info)
+                if detection_info["status"] == "completed":
+                    detection_successes.append(str(upload_info.get("original_filename") or "video"))
+                else:
+                    detection_warnings.append(
+                        f"{upload_info['original_filename']}: {detection_info['message']}"
+                    )
+            except (RuntimeError, FileNotFoundError, ValueError) as detection_exc:
+                detection_failures.append(f"{upload_info['original_filename']}: {detection_exc}")
+
+        upload_status = _build_batch_status(len(successful_uploads), len(upload_failures))
+        upload_message = _build_upload_batch_message(successful_uploads, upload_failures)
+        query_params = {
+            "tab": "review",
+            "upload_status": upload_status,
+            "upload_message": upload_message,
+        }
+
+        if successful_uploads:
+            detection_status = _build_batch_status(
+                len(detection_successes),
+                len(detection_failures),
+                warning_count=len(detection_warnings),
+            )
+            detection_message = _build_detection_batch_message(
+                detection_successes=detection_successes,
+                detection_warnings=detection_warnings,
+                detection_failures=detection_failures,
+            )
+            query_params["detection_status"] = detection_status
+            query_params["detection_message"] = detection_message
+
+        query = urlencode(query_params)
     except ValueError as exc:
         query = urlencode(
             {

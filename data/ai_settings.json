@@ -1,8 +1,10 @@
 {
   "confidence_threshold": 0.75,
-  "extraction_interval_seconds": 0.5,
-  "behavior_threshold": 0.86,
+  "phone_conf_threshold": 0.32,
+  "extraction_interval_seconds": 0.65,
+  "behavior_threshold": 0.85,
   "enable_gaze_alerts": true,
   "enable_cell_phone_alerts": true,
+  "enable_face_missing_alerts": false,
   "enable_multiple_people_alerts": false
 }

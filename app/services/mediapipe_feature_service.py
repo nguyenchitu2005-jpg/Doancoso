@@ -44,6 +44,8 @@ class MediapipeFeatureService:
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
     ) -> None:
+        # Service nay chi chuyen frame + detections thanh bo feature muc cao
+        # de DetectionService dung cho rule gaze/head_pose/hand_phone.
         self.max_num_faces = max(1, max_num_faces)
         self.max_num_hands = max(1, max_num_hands)
         self.min_detection_confidence = min_detection_confidence
@@ -57,11 +59,13 @@ class MediapipeFeatureService:
         self.reset_session_state()
 
     def reset_session_state(self) -> None:
+        # Gaze can baseline theo tung phien; reset de tranh lay baseline cu.
         self._gaze_baseline_horizontal = 0.0
         self._gaze_baseline_vertical = 0.0
         self._gaze_baseline_samples = 0
 
     def _ensure_models(self) -> bool:
+        # Lazy-load FaceMesh + Hands; chi khoi tao khi thuc su can den MediaPipe.
         if self._load_attempted:
             return self._face_mesh is not None and self._hands is not None
 
@@ -116,6 +120,7 @@ class MediapipeFeatureService:
         self.reset_session_state()
 
     def _empty_features(self) -> dict[str, Any]:
+        # Bo feature chuan ma behavior model va detection rules cung hieu.
         return {
             "face_present": 0,
             "no_of_face": 0,
@@ -179,6 +184,7 @@ class MediapipeFeatureService:
         return (min_x, min_y, max(0.0, max_x - min_x), max(0.0, max_y - min_y))
 
     def _select_primary_face(self, face_landmarks: list[Any], width: int, height: int) -> tuple[list[Any] | None, int]:
+        # Neu co nhieu mat, uu tien mat co dien tich lon nhat trong khung hinh.
         if not face_landmarks:
             return None, 0
 
@@ -195,6 +201,7 @@ class MediapipeFeatureService:
         width: int,
         height: int,
     ) -> tuple[str | None, float | None, float | None, float | None]:
+        # Dung solvePnP de uoc luong huong dau tu 6 moc diem khuon mat co ban.
         if cv2 is None:
             return (None, None, None, None)
 
@@ -263,6 +270,7 @@ class MediapipeFeatureService:
         return angle
 
     def _classify_head_pose(self, pitch: float, yaw: float) -> str:
+        # Chuyen gia tri goc thanh nhan trai/phai/len/xuong/forward de de dung o rule phia tren.
         if yaw <= -24.0:
             return "left"
         if yaw >= 24.0:
@@ -274,6 +282,7 @@ class MediapipeFeatureService:
         return "forward"
 
     def _head_pose_strength(self, pitch: float | None, yaw: float | None) -> str:
+        # Tach muc do moderate/strong de DetectionService co the quyet dinh nguong canh bao.
         if pitch is None or yaw is None:
             return "none"
         yaw_abs = abs(yaw)
@@ -294,6 +303,7 @@ class MediapipeFeatureService:
         iris_indices: list[int],
         center_indices: list[int],
     ) -> dict[str, float | tuple[float, float] | None]:
+        # Rut gon mat/iris thanh ratio vi tri con nguoi ben trong o mat.
         iris_points = [self._landmark_pixel(landmarks, index, width, height) for index in iris_indices]
         iris_center = self._mean_point(iris_points)
         eye_center = self._mean_point(
@@ -324,6 +334,8 @@ class MediapipeFeatureService:
         head_pose: str | None,
         head_yaw: float | None,
     ) -> dict[str, Any]:
+        # Uoc luong huong nhin dua tren vi tri iris so voi hinh hoc cua hai mat.
+        # Co baseline de bu cho webcam/tu the mac dinh cua tung nguoi.
         if len(landmarks) < 478:
             return {
                 "gaze_on_script": None,
@@ -430,6 +442,7 @@ class MediapipeFeatureService:
         phone_center: tuple[float, float] | None,
         phone_present: bool,
     ) -> dict[str, Any]:
+        # Lay thong tin co ban cua tay va kiem tra tay co dang o gan dien thoai hay khong.
         features = {
             "hand_count": 0,
             "left_hand_x": 0.0,
@@ -470,6 +483,10 @@ class MediapipeFeatureService:
         return features
 
     def extract(self, frame_bgr: Any, yolo_detections: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        # Ham tong hop chinh:
+        # - chay FaceMesh + Hands
+        # - trich xuat feature
+        # - suy ra cac signal de DetectionService dung truc tiep
         payload = {
             "available": False,
             "features": self._empty_features(),
@@ -498,6 +515,7 @@ class MediapipeFeatureService:
         detections = yolo_detections or []
         phone_detections = [item for item in detections if item.get("label") in {"cell phone", "mobile phone"}]
 
+        # Dua thong tin phone detection tu YOLO vao chung bo feature cua MediaPipe.
         if phone_detections:
             primary_phone = max(phone_detections, key=lambda item: float(item.get("confidence", 0.0)))
             x1, y1, x2, y2 = [float(value) for value in primary_phone["box"]]
@@ -513,6 +531,7 @@ class MediapipeFeatureService:
         primary_landmarks, face_count = self._select_primary_face(face_landmarks, width, height)
         features["no_of_face"] = face_count
 
+        # Neu co mat chinh, bo sung head pose, gaze va cac toa do mat/mui/mieng.
         if primary_landmarks is not None:
             features["face_present"] = 1
             features["face_conf"] = 100.0
@@ -569,6 +588,7 @@ class MediapipeFeatureService:
             pitch=features.get("head_pitch"),
             yaw=features.get("head_yaw"),
         )
+        # Signals la lop da "don gian hoa" de DetectionService khong phai tinh lai logic co ban.
         payload["signals"] = {
             "face_count": int(features["no_of_face"] or 0),
             "head_pose_alert": head_pose_strength in {"moderate", "strong"},

@@ -41,6 +41,8 @@ class FaceRecognitionService:
         det_size: tuple[int, int] = (384, 384),
         max_faces_per_frame: int = 1,
     ) -> None:
+        # Service nay dung InsightFace de doi chieu mat trong frame
+        # voi gallery anh da dang ky truoc cua thi sinh.
         self.gallery_dir = Path(gallery_dir)
         self.registry_path = Path(registry_path)
         self.similarity_threshold = max(-1.0, min(1.0, similarity_threshold))
@@ -62,6 +64,7 @@ class FaceRecognitionService:
         self._initialize()
 
     def _resolve_runtime(self) -> tuple[list[str], int, str, str | None]:
+        # Chon backend uu tien CUDA neu onnxruntime-gpu kha dung, neu khong thi roi ve CPU.
         available_providers = list(ort.get_available_providers()) if ort is not None else []
         self._available_providers = available_providers
 
@@ -85,6 +88,7 @@ class FaceRecognitionService:
         return (["CPUExecutionProvider"], -1, "cpu", None)
 
     def _collect_active_providers(self) -> list[str]:
+        # Lay danh sach provider thuc te dang duoc InsightFace su dung de hien thi len UI.
         if self._app is None:
             return []
 
@@ -106,6 +110,7 @@ class FaceRecognitionService:
         return providers
 
     def _initialize(self) -> None:
+        # Khoi tao FaceAnalysis va nap gallery embedding mot lan luc service duoc tao.
         if FaceAnalysis is None or cv2 is None or np is None:
             self._load_error = "Thieu insightface/opencv/numpy."
             return
@@ -156,6 +161,7 @@ class FaceRecognitionService:
         }
 
     def _profiles_from_registry(self) -> list[dict[str, str]]:
+        # Doc danh sach thi sinh chuan tu candidate_registry.json neu file nay ton tai.
         if not self.registry_path.exists():
             return []
         try:
@@ -174,6 +180,7 @@ class FaceRecognitionService:
         return profiles
 
     def _profile_from_filename(self, image_path: Path) -> dict[str, str]:
+        # Fallback: suy ra candidate_id/name tu ten file anh neu khong co registry JSON.
         stem = image_path.stem
         parts = [part for part in stem.replace("-", "_").split("_") if part]
         if not parts:
@@ -195,6 +202,7 @@ class FaceRecognitionService:
         }
 
     def _discover_profiles(self) -> list[dict[str, str]]:
+        # Uu tien registry JSON; neu khong co thi quet truc tiep face_gallery.
         explicit_profiles = self._profiles_from_registry()
         if explicit_profiles:
             return explicit_profiles
@@ -207,6 +215,7 @@ class FaceRecognitionService:
         return profiles
 
     def _read_embedding_from_image(self, image_path: Path) -> Any | None:
+        # Bien moi anh gallery thanh embedding vector de so khop nhanh ve sau.
         if self._app is None or cv2 is None:
             return None
         frame_bgr = cv2.imread(str(image_path))
@@ -222,6 +231,7 @@ class FaceRecognitionService:
         return embedding
 
     def _load_gallery_embeddings(self) -> None:
+        # Nap toan bo gallery len RAM duoi dang embedding de tranh doc lai anh moi frame.
         profiles = self._discover_profiles()
         self._profiles_by_id = {}
         self._gallery_embeddings = {}
@@ -257,6 +267,7 @@ class FaceRecognitionService:
         }
 
     def _cosine_similarity(self, source_embedding: Any, target_embedding: Any) -> float:
+        # Do do giong nhau giua 2 embedding khuon mat.
         if np is None:
             return -1.0
         source = np.asarray(source_embedding, dtype=np.float32)
@@ -267,6 +278,7 @@ class FaceRecognitionService:
         return float(np.dot(source, target) / denominator)
 
     def identify_faces(self, frame_bgr) -> list[dict[str, Any]]:
+        # Chay nhan dien tren frame va tra ve cac match vuot qua similarity_threshold.
         if not self.is_available() or self._app is None:
             return []
 
@@ -281,6 +293,8 @@ class FaceRecognitionService:
             reverse=True,
         )[: self.max_faces_per_frame]
 
+        # Moi mat trong frame se duoc so sanh voi toan bo gallery,
+        # sau do giu candidate co similarity cao nhat.
         results: list[dict[str, Any]] = []
         for face in faces:
             embedding = getattr(face, "embedding", None)
@@ -318,6 +332,7 @@ class FaceRecognitionService:
         return sorted(results, key=lambda item: float(item.get("similarity", 0.0)), reverse=True)
 
     def select_primary_identity(self, matches: list[dict[str, Any]]) -> dict[str, Any] | None:
+        # DetectionService hien tai chi can danh tinh uu tien cao nhat cho frame.
         if not matches:
             return None
         return matches[0]

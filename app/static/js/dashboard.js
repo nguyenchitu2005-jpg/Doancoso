@@ -4,6 +4,8 @@ const pageTitle = document.getElementById("page-title");
 const dashboardPayload = JSON.parse(document.getElementById("dashboard-data").textContent);
 const reviewPayloadElement = document.getElementById("review-data");
 const reviewPayload = reviewPayloadElement ? JSON.parse(reviewPayloadElement.textContent) : { incidents: [] };
+const reviewHistoryPayloadElement = document.getElementById("review-history-data");
+const reviewHistory = reviewHistoryPayloadElement ? JSON.parse(reviewHistoryPayloadElement.textContent) : [];
 const appShell = document.querySelector(".app-shell");
 const teacherReviewCard = document.getElementById("teacher-review-card");
 const teacherReviewStatus = document.getElementById("teacher-review-status");
@@ -152,6 +154,15 @@ async function submitTeacherReviewDecision(decision) {
       throw new Error(payload?.message || "Khong the cap nhat quyet dinh.");
     }
     reviewPayload.teacher_review = payload.teacher_review || {};
+    const currentResultPath = String(reviewPayload.result_path || "");
+    const currentVideoPath = String(reviewPayload.video_path || "");
+    reviewHistory.forEach((entry) => {
+      const sameResult = currentResultPath && String(entry?.result_path || "") === currentResultPath;
+      const sameVideo = !currentResultPath && currentVideoPath && String(entry?.video_path || "") === currentVideoPath;
+      if (sameResult || sameVideo) {
+        entry.teacher_review = payload.teacher_review || {};
+      }
+    });
     renderTeacherReview();
     syncStudentTeacherReview();
     renderStudents();
@@ -375,20 +386,53 @@ if (exportStudentsCsvButton) {
 
 const confidenceRange = document.getElementById("confidence-range");
 const confidenceValue = document.getElementById("confidence-value");
+const phoneConfidenceRange = document.getElementById("phone-confidence-range");
+const phoneConfidenceValue = document.getElementById("phone-confidence-value");
 const intervalRange = document.getElementById("interval-range");
 const intervalValue = document.getElementById("interval-value");
 const behaviorThresholdRange = document.getElementById("behavior-threshold-range");
 const behaviorThresholdValue = document.getElementById("behavior-threshold-value");
 const toggleGazeAlerts = document.getElementById("toggle-gaze-alerts");
 const toggleCellPhoneAlerts = document.getElementById("toggle-cell-phone-alerts");
+const toggleFaceMissingAlerts = document.getElementById("toggle-face-missing-alerts");
 const toggleMultiplePeopleAlerts = document.getElementById("toggle-multiple-people-alerts");
 const saveSettingsButton = document.getElementById("save-settings-button");
 const resetSettingsButton = document.getElementById("reset-settings-button");
 const settingsFeedback = document.getElementById("settings-feedback");
 
+function patchToggleLabels() {
+  const faceMissingRow = toggleFaceMissingAlerts?.closest(".toggle-row");
+  const multiplePeopleRow = toggleMultiplePeopleAlerts?.closest(".toggle-row");
+  const faceMissingTitle = faceMissingRow?.querySelector("p");
+  const faceMissingDescription = faceMissingRow?.querySelector("small");
+  const multiplePeopleTitle = multiplePeopleRow?.querySelector("p");
+  const multiplePeopleDescription = multiplePeopleRow?.querySelector("small");
+
+  if (faceMissingTitle) {
+    faceMissingTitle.textContent = "Vắng mặt khỏi khung hình";
+  }
+  if (faceMissingDescription) {
+    faceMissingDescription.textContent = "Cảnh báo khi không còn thấy khuôn mặt thí sinh.";
+  }
+  if (multiplePeopleTitle) {
+    multiplePeopleTitle.textContent = "Trao đổi nhóm";
+  }
+  if (multiplePeopleDescription) {
+    multiplePeopleDescription.textContent = "Phát hiện nhiều người trong khung hình.";
+  }
+}
+
+patchToggleLabels();
+
 if (confidenceRange && confidenceValue) {
   confidenceRange.addEventListener("input", () => {
     confidenceValue.textContent = Number(confidenceRange.value).toFixed(2);
+  });
+}
+
+if (phoneConfidenceRange && phoneConfidenceValue) {
+  phoneConfidenceRange.addEventListener("input", () => {
+    phoneConfidenceValue.textContent = Number(phoneConfidenceRange.value).toFixed(2);
   });
 }
 
@@ -417,10 +461,12 @@ function showSettingsFeedback(message, isError = false) {
 function collectAiSettings() {
   return {
     confidence_threshold: Number(confidenceRange?.value || 0.75),
-    extraction_interval_seconds: Number(intervalRange?.value || 2.0),
+    phone_conf_threshold: Number(phoneConfidenceRange?.value || 0.30),
+    extraction_interval_seconds: Number(intervalRange?.value || 0.5),
     behavior_threshold: Number(behaviorThresholdRange?.value || 0.82),
     enable_gaze_alerts: Boolean(toggleGazeAlerts?.checked),
     enable_cell_phone_alerts: Boolean(toggleCellPhoneAlerts?.checked),
+    enable_face_missing_alerts: Boolean(toggleFaceMissingAlerts?.checked),
     enable_multiple_people_alerts: Boolean(toggleMultiplePeopleAlerts?.checked),
   };
 }
@@ -429,6 +475,10 @@ function applyAiSettings(settings) {
   if (confidenceRange && confidenceValue && typeof settings.confidence_threshold === "number") {
     confidenceRange.value = settings.confidence_threshold.toFixed(2);
     confidenceValue.textContent = settings.confidence_threshold.toFixed(2);
+  }
+  if (phoneConfidenceRange && phoneConfidenceValue && typeof settings.phone_conf_threshold === "number") {
+    phoneConfidenceRange.value = settings.phone_conf_threshold.toFixed(2);
+    phoneConfidenceValue.textContent = settings.phone_conf_threshold.toFixed(2);
   }
   if (intervalRange && intervalValue && typeof settings.extraction_interval_seconds === "number") {
     intervalRange.value = settings.extraction_interval_seconds.toFixed(2);
@@ -443,6 +493,9 @@ function applyAiSettings(settings) {
   }
   if (toggleCellPhoneAlerts && typeof settings.enable_cell_phone_alerts === "boolean") {
     toggleCellPhoneAlerts.checked = settings.enable_cell_phone_alerts;
+  }
+  if (toggleFaceMissingAlerts && typeof settings.enable_face_missing_alerts === "boolean") {
+    toggleFaceMissingAlerts.checked = settings.enable_face_missing_alerts;
   }
   if (toggleMultiplePeopleAlerts && typeof settings.enable_multiple_people_alerts === "boolean") {
     toggleMultiplePeopleAlerts.checked = settings.enable_multiple_people_alerts;
@@ -532,10 +585,23 @@ function syncSelectedFileState() {
     return;
   }
 
-  const [file] = uploadFileInput.files;
-  const hasFile = Boolean(file);
+  const files = Array.from(uploadFileInput.files || []);
+  const fileCount = files.length;
+  const hasFile = fileCount > 0;
 
-  selectedFileName.textContent = hasFile ? `Đã chọn: ${file.name}` : "Chưa chọn tệp nào";
+  if (!hasFile) {
+    selectedFileName.textContent = "Chua chon video nao";
+  } else if (fileCount === 1) {
+    selectedFileName.textContent = `Da chon: ${files[0].name}`;
+  } else {
+    const previewNames = files
+      .slice(0, 3)
+      .map((file) => file.name)
+      .join(", ");
+    const remainingCount = fileCount - Math.min(fileCount, 3);
+    const suffix = remainingCount > 0 ? ` (+${remainingCount})` : "";
+    selectedFileName.textContent = `Da chon ${fileCount} video: ${previewNames}${suffix}`;
+  }
 
   if (clearSelectedFileButton) {
     clearSelectedFileButton.hidden = !hasFile;
@@ -562,6 +628,16 @@ const reviewVideoPlayer = document.getElementById("review-video-player");
 const liveCameraPlayer = document.getElementById("live-camera-player");
 const reviewVideoStage = document.getElementById("review-video-stage");
 const stagePlaceholder = document.getElementById("review-stage-placeholder");
+const reviewSessionList = document.getElementById("review-session-list");
+const reviewCandidateAvatar = document.getElementById("review-candidate-avatar");
+const reviewCandidateName = document.getElementById("review-candidate-name");
+const reviewCandidateId = document.getElementById("review-candidate-id");
+const reviewCandidateEmail = document.getElementById("review-candidate-email");
+const reviewCandidateRoom = document.getElementById("review-candidate-room");
+const reviewCandidateAlerts = document.getElementById("review-candidate-alerts");
+const reviewCandidateDeviceStatus = document.getElementById("review-candidate-device-status");
+const reviewRiskLabel = document.getElementById("review-risk-label");
+const reviewRiskMessage = document.getElementById("review-risk-message");
 const toggleLiveTestButton = document.getElementById("toggle-live-test-button");
 const liveTestFeedback = document.getElementById("live-test-feedback");
 const stageFlagText = document.getElementById("review-stage-flag-text");
@@ -578,8 +654,8 @@ const liveCameraDeniedText = "Khong the bat camera de live test";
 const liveWaitingIncidentText = "Dang cho canh bao tu webcam.";
 const incidentLookbackSeconds = 0.35;
 const incidentDisplayWindowSeconds = 2.4;
-const liveFrameIntervalMs = 450;
-const liveFrameMaxWidth = 720;
+const liveFrameIntervalMs = 300;
+const liveFrameMaxWidth = 960;
 const liveCaptureCanvas = document.createElement("canvas");
 const liveCaptureContext = liveCaptureCanvas.getContext("2d");
 let liveModeStarted = false;
@@ -587,6 +663,39 @@ let liveModeStarting = false;
 let liveStream = null;
 let livePollTimer = null;
 let livePollInFlight = false;
+
+function replaceReviewPayload(nextPayload) {
+  Object.keys(reviewPayload).forEach((key) => {
+    delete reviewPayload[key];
+  });
+  Object.assign(reviewPayload, nextPayload || { incidents: [] });
+}
+
+function deriveReviewCandidate(payload) {
+  const candidate = payload?.review_candidate || payload?.primary_candidate || {};
+  const name = String(candidate?.name || "Unknown Candidate");
+  const parts = name.split(/\s+/).filter(Boolean).slice(0, 2);
+  return {
+    candidate_id: String(candidate?.candidate_id || "UNKNOWN"),
+    name,
+    email: String(candidate?.email || ""),
+    room: String(candidate?.room || ""),
+    alerts: Number(candidate?.alerts || 0),
+    risk_label: String(candidate?.risk_label || "THAP"),
+    device_status: String(candidate?.device_status || "Dang cho phan tich"),
+    avatar: String(candidate?.avatar || parts.map((part) => part[0]).join("").toUpperCase() || "UC"),
+  };
+}
+
+function getReviewRiskMessage(payload) {
+  if (payload?.review_risk_message) {
+    return String(payload.review_risk_message);
+  }
+  const incidentCount = Array.isArray(payload?.incidents) ? payload.incidents.length : 0;
+  return incidentCount > 0
+    ? `He thong da ghi nhan ${incidentCount} su co trong lan hau kiem nay.`
+    : "Chua ghi nhan su co trong lan hau kiem nay.";
+}
 
 function escapeHtml(value) {
   return String(value || "")
@@ -645,6 +754,72 @@ function setStageFlagText(label, isIncidentActive) {
   }
 }
 
+function updateReviewDecisionButtons() {
+  const isDisabled = !reviewPayload.result_path && !reviewPayload.video_path;
+  if (confirmFraudButton) {
+    confirmFraudButton.disabled = isDisabled;
+  }
+  if (dismissReviewButton) {
+    dismissReviewButton.disabled = isDisabled;
+  }
+}
+
+function renderReviewCandidatePanel() {
+  const candidate = deriveReviewCandidate(reviewPayload);
+  if (reviewCandidateAvatar) {
+    reviewCandidateAvatar.textContent = candidate.avatar;
+  }
+  if (reviewCandidateName) {
+    reviewCandidateName.textContent = candidate.name;
+  }
+  if (reviewCandidateId) {
+    reviewCandidateId.textContent = `Ma sinh vien: #${candidate.candidate_id}`;
+  }
+  if (reviewCandidateEmail) {
+    reviewCandidateEmail.textContent = candidate.email || "N/A";
+  }
+  if (reviewCandidateRoom) {
+    reviewCandidateRoom.textContent = candidate.room || "Unknown Room";
+  }
+  if (reviewCandidateAlerts) {
+    reviewCandidateAlerts.textContent = String(candidate.alerts);
+  }
+  if (reviewCandidateDeviceStatus) {
+    reviewCandidateDeviceStatus.textContent = candidate.device_status;
+  }
+  if (reviewRiskLabel) {
+    reviewRiskLabel.textContent = candidate.risk_label;
+  }
+  if (reviewRiskMessage) {
+    reviewRiskMessage.textContent = getReviewRiskMessage(reviewPayload);
+  }
+}
+
+function renderRecordedVideoStage() {
+  const videoUrl = String(reviewPayload.video_url || "");
+  if (reviewVideoStage) {
+    reviewVideoStage.classList.toggle("has-video", Boolean(videoUrl));
+  }
+  if (reviewVideoPlayer) {
+    if (videoUrl) {
+      if (reviewVideoPlayer.getAttribute("src") !== videoUrl) {
+        reviewVideoPlayer.setAttribute("src", videoUrl);
+        reviewVideoPlayer.load();
+      }
+      reviewVideoPlayer.hidden = false;
+    } else {
+      reviewVideoPlayer.pause();
+      reviewVideoPlayer.removeAttribute("src");
+      reviewVideoPlayer.load();
+      reviewVideoPlayer.hidden = true;
+    }
+  }
+  if (stagePlaceholder) {
+    stagePlaceholder.hidden = Boolean(videoUrl);
+  }
+  setStageFlagText(videoUrl ? defaultStageFlagText : emptyStageFlagText, false);
+}
+
 function renderIncidentHistory(incidents, emptyText) {
   if (!incidentList) {
     return;
@@ -664,7 +839,7 @@ function renderIncidentHistory(incidents, emptyText) {
   incidentList.innerHTML = incidents
     .map((incident) => {
       const snapshotMarkup = incident.snapshot_url
-        ? `<img class="incident-thumb" src="${incident.snapshot_url}" alt="Snapshot vi pham tai ${escapeHtml(incident.time)}">`
+        ? `<img class="incident-thumb" src="${incident.snapshot_url}" alt="Snapshot vi pham tai ${escapeHtml(incident.time)}" loading="lazy" decoding="async">`
         : "";
       return `
         <article class="incident-card" data-incident-time="${Number(incident.time_seconds || 0)}" data-incident-label="${genericIncidentLabel}">
@@ -676,6 +851,49 @@ function renderIncidentHistory(incidents, emptyText) {
     })
     .join("");
   refreshIncidentCards();
+  bindIncidentCardNavigation();
+}
+
+function renderRecordedIncidentHistory() {
+  renderIncidentHistory(reviewPayload.incidents || [], "Chua co du lieu vi pham. Tai video de bat dau hau kiem.");
+  if (incidentCountChip) {
+    incidentCountChip.textContent = `${reviewPayload.incidents?.length || 0} su co`;
+  }
+  if (reviewPayload.video_url && reviewVideoPlayer && !reviewVideoPlayer.hidden) {
+    setActiveIncident(reviewVideoPlayer.currentTime || 0);
+  } else {
+    setStageFlagText(reviewPayload.video_url ? defaultStageFlagText : emptyStageFlagText, false);
+  }
+}
+
+function renderReviewSessionSelection() {
+  if (!reviewSessionList) {
+    return;
+  }
+  const selectedResultPath = String(reviewPayload.result_path || "");
+  const selectedVideoPath = String(reviewPayload.video_path || "");
+  reviewSessionList.querySelectorAll(".review-session-item").forEach((item) => {
+    const itemResultPath = String(item.dataset.resultPath || "");
+    const itemVideoPath = String(item.dataset.videoPath || "");
+    const sameResult = Boolean(selectedResultPath) && itemResultPath === selectedResultPath;
+    const sameVideo = !selectedResultPath && Boolean(selectedVideoPath) && itemVideoPath === selectedVideoPath;
+    item.classList.toggle("is-active", sameResult || sameVideo);
+  });
+}
+
+function applyRecordedReviewPayload(nextPayload) {
+  if (liveStream || liveModeStarting) {
+    stopLiveReviewMode({ restoreState: false });
+  }
+  replaceReviewPayload(nextPayload);
+  renderRecordedVideoStage();
+  renderRecordedIncidentHistory();
+  renderReviewCandidatePanel();
+  renderTeacherReview();
+  updateReviewDecisionButtons();
+  renderReviewSessionSelection();
+  syncStudentTeacherReview();
+  renderStudents();
 }
 
 function setActiveIncident(currentTime) {
@@ -707,17 +925,11 @@ function bindIncidentCardNavigation() {
 
 function initializeReviewTimeline() {
   refreshIncidentCards();
-  if (incidentCountChip) {
-    incidentCountChip.textContent = `${reviewPayload.incidents?.length || 0} su co`;
-  }
-
-  if (!incidentCards.length) {
-    setStageFlagText(reviewPayload.video_url ? defaultStageFlagText : emptyStageFlagText, false);
-    return;
-  }
-
-  bindIncidentCardNavigation();
-  setActiveIncident(0);
+  renderRecordedVideoStage();
+  renderRecordedIncidentHistory();
+  renderReviewCandidatePanel();
+  updateReviewDecisionButtons();
+  renderReviewSessionSelection();
 
   if (reviewVideoPlayer) {
     reviewVideoPlayer.addEventListener("timeupdate", () => {
@@ -761,18 +973,7 @@ function restoreRecordedStage() {
 }
 
 function restoreRecordedIncidentHistory() {
-  if (!incidentList) {
-    return;
-  }
-  incidentList.innerHTML = initialIncidentMarkup;
-  refreshIncidentCards();
-  if (incidentCountChip) {
-    incidentCountChip.textContent = `${reviewPayload.incidents?.length || 0} su co`;
-  }
-  if (reviewPayload.video_url) {
-    bindIncidentCardNavigation();
-    setActiveIncident(reviewVideoPlayer?.currentTime || 0);
-  }
+  renderRecordedIncidentHistory();
 }
 
 function stopLiveReviewMode({ restoreState = true } = {}) {
@@ -809,6 +1010,22 @@ function applyLiveReviewPayload(payload) {
   } else {
     setStageFlagText(defaultStageFlagText, false);
   }
+}
+
+if (reviewSessionList && Array.isArray(reviewHistory) && reviewHistory.length) {
+  reviewSessionList.querySelectorAll(".review-session-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      const resultPath = String(item.dataset.resultPath || "");
+      const videoPath = String(item.dataset.videoPath || "");
+      const targetPayload = reviewHistory.find((entry) => {
+        return String(entry?.result_path || "") === resultPath || String(entry?.video_path || "") === videoPath;
+      });
+      if (!targetPayload) {
+        return;
+      }
+      applyRecordedReviewPayload(targetPayload);
+    });
+  });
 }
 
 async function postLiveFrame(blob) {
@@ -902,6 +1119,8 @@ async function ensureLiveReviewMode() {
     liveStream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: "user",
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
       },
       audio: false,
     });

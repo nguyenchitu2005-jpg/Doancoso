@@ -45,8 +45,9 @@ class DetectionService:
         results_dir: str | Path = "results",
         model_name: str = "yolo11n.pt",
         conf_threshold: float = 0.35,
+        phone_conf_threshold: float = 0.30,
         sample_every_n_frames: int = 30,
-        sample_interval_seconds: float = 2.0,
+        sample_interval_seconds: float = 0.5,
         incident_cooldown_seconds: float = 3.0,
         max_incidents: int = 40,
         behavior_model_path: str | Path = "models/suspicious_behavior_model.joblib",
@@ -54,14 +55,16 @@ class DetectionService:
         enable_mediapipe: bool = True,
         enable_face_recognition: bool = True,
         min_signal_streak: int = 2,
-        mediapipe_interval_samples: int = 3,
-        face_recognition_interval_samples: int = 18,
+        mediapipe_interval_samples: int = 2,
+        face_recognition_interval_samples: int = 60,
         face_identity_ttl_samples: int = 24,
     ) -> None:
+        # Cau hinh runtime co the bi ghi de boi ai_settings.json trong luc app dang chay.
         self.weights_dir = Path(weights_dir)
         self.results_dir = Path(results_dir)
         self.model_name = model_name
         self.conf_threshold = conf_threshold
+        self.phone_conf_threshold = max(0.1, min(phone_conf_threshold, 0.8))
         self.sample_every_n_frames = max(1, sample_every_n_frames)
         self.sample_interval_seconds = max(0.5, sample_interval_seconds)
         self.incident_cooldown_seconds = max(0.0, incident_cooldown_seconds)
@@ -74,9 +77,12 @@ class DetectionService:
             face_identity_ttl_samples,
         )
         self.gaze_warmup_seconds = 3.0
+        self.enable_behavior_model = True
         self.enable_gaze_alerts = True
         self.enable_cell_phone_alerts = True
+        self.enable_face_missing_alerts = True
         self.enable_multiple_people_alerts = False
+        self.mediapipe_max_dimension = 640
         self.results_dir.mkdir(parents=True, exist_ok=True)
         self.weights_dir.mkdir(parents=True, exist_ok=True)
         self._model = None
@@ -91,11 +97,14 @@ class DetectionService:
         self._live_review_state: dict[str, Any] | None = None
         self.apply_runtime_settings(get_ai_settings())
 
+    # Nap cac setting do giao dien luu, de thay doi nguong/chu ky ma khong can sua code tay.
     def apply_runtime_settings(self, settings: dict[str, Any] | None) -> None:
         if not settings:
             return
         if "confidence_threshold" in settings:
             self.conf_threshold = max(0.25, min(float(settings["confidence_threshold"]), 0.95))
+        if "phone_conf_threshold" in settings:
+            self.phone_conf_threshold = max(0.1, min(float(settings["phone_conf_threshold"]), 0.8))
         if "extraction_interval_seconds" in settings:
             self.sample_interval_seconds = max(0.25, min(float(settings["extraction_interval_seconds"]), 5.0))
         if "behavior_threshold" in settings:
@@ -104,13 +113,18 @@ class DetectionService:
             self.enable_gaze_alerts = bool(settings["enable_gaze_alerts"])
         if "enable_cell_phone_alerts" in settings:
             self.enable_cell_phone_alerts = bool(settings["enable_cell_phone_alerts"])
+        if "enable_face_missing_alerts" in settings:
+            self.enable_face_missing_alerts = bool(settings["enable_face_missing_alerts"])
         if "enable_multiple_people_alerts" in settings:
             self.enable_multiple_people_alerts = bool(settings["enable_multiple_people_alerts"])
 
     def _resolve_model_source(self) -> str | Path:
         explicit_weight = self.weights_dir / self.model_name
-        return explicit_weight
+        if explicit_weight.exists():
+            return explicit_weight
+        return self.model_name
 
+    # Lazy-load YOLO de tranh khoi tao model som khi service moi vua duoc import.
     def _load_model(self):
         if YOLO is None:
             raise RuntimeError("Thieu thu vien ultralytics. Hay cai `pip install ultralytics`.")
@@ -163,14 +177,25 @@ class DetectionService:
         }
 
     def _analysis_mode(self) -> str:
+        # Chuoi nay duoc dua ra UI/JSON de biet lan hau kiem dang bat nhung engine nao.
         modes = ["yolo"]
         if self.enable_mediapipe and self.mediapipe_feature_service is not None and self.mediapipe_feature_service.is_available():
             modes.append("mediapipe")
-        if self.behavior_model_service.is_available():
+        if self.enable_behavior_model and self.behavior_model_service.is_available():
             modes.append("behavior_model")
         if self.enable_face_recognition and self.face_recognition_service is not None and self.face_recognition_service.is_available():
             modes.append("face_recognition")
         return "+".join(modes)
+
+    def _behavior_model_status(self) -> dict[str, Any]:
+        if not self.enable_behavior_model:
+            return {
+                "enabled": False,
+                "model_path": str(self.behavior_model_service.model_path),
+                "threshold": self.behavior_model_service.score_threshold,
+                "message": "Behavior model bi tat trong cau hinh hien tai.",
+            }
+        return self.behavior_model_service.get_status()
 
     def _mediapipe_status(self) -> dict[str, Any]:
         if not self.enable_mediapipe or self.mediapipe_feature_service is None:
@@ -243,6 +268,37 @@ class DetectionService:
             self._incident_event_rank(str(incident.get("event_type") or "")),
         )
 
+    def _incident_merge_window_seconds(self, event_type: str | None) -> float:
+        # Gop cac canh bao sat nhau thanh 1 incident de timeline khong bi lap vo nghia.
+        normalized = str(event_type or "").strip().lower()
+        if normalized in {"head_pose", "gaze"}:
+            return 2.0
+        if normalized in {"cell_phone", "hand_phone"}:
+            return 1.5
+        if normalized in {"multiple_people", "behavior_model", "face_missing"}:
+            return 3.0
+        return 1.0
+
+    def _can_merge_incidents(self, left: dict[str, Any], right: dict[str, Any]) -> bool:
+        left_type = str(left.get("event_type") or "").strip().lower()
+        right_type = str(right.get("event_type") or "").strip().lower()
+        if not left_type or left_type != right_type:
+            return False
+
+        left_label = str(left.get("label") or "").strip().lower()
+        right_label = str(right.get("label") or "").strip().lower()
+        if left_label != right_label:
+            return False
+
+        left_candidate = str(left.get("candidate_id") or "UNKNOWN").strip().upper()
+        right_candidate = str(right.get("candidate_id") or "UNKNOWN").strip().upper()
+        if left_candidate != right_candidate:
+            return False
+
+        left_time = float(left.get("time_seconds") or 0.0)
+        right_time = float(right.get("time_seconds") or 0.0)
+        return (right_time - left_time) <= self._incident_merge_window_seconds(left_type)
+
     def _deduplicate_incidents_per_second(self, incidents: list[dict[str, Any]]) -> list[dict[str, Any]]:
         best_by_second: dict[int, dict[str, Any]] = {}
         for incident in incidents:
@@ -253,7 +309,52 @@ class DetectionService:
 
         selected = list(best_by_second.values())
         selected.sort(key=lambda item: float(item.get("time_seconds") or 0.0))
-        return selected
+
+        merged: list[dict[str, Any]] = []
+        for incident in selected:
+            if not merged:
+                merged.append(incident)
+                continue
+
+            previous = merged[-1]
+            if self._can_merge_incidents(previous, incident):
+                if self._incident_score(incident) > self._incident_score(previous):
+                    merged[-1] = incident
+                continue
+
+            merged.append(incident)
+        return merged
+
+    def _required_signal_duration_seconds(self, event_type: str | None, *, live_mode: bool = False) -> float:
+        # Video review dung duration cho head_pose; live hien dang uu tien streak/cooldown.
+        normalized = str(event_type or "").strip().lower()
+        if normalized == "head_pose":
+            return 0.6 if live_mode else 2.0
+        if normalized == "gaze" and live_mode:
+            return 0.6
+        return 0.0
+
+    def _track_signal_duration(
+        self,
+        *,
+        active_since: dict[str, float],
+        duration_triggered: dict[str, bool],
+        key: str,
+        active: bool,
+        timestamp_seconds: float,
+    ) -> tuple[float, bool]:
+        if not active:
+            active_since.pop(key, None)
+            duration_triggered.pop(key, None)
+            return (0.0, False)
+
+        started_at = active_since.get(key)
+        if started_at is None:
+            active_since[key] = timestamp_seconds
+            duration_triggered[key] = False
+            return (0.0, False)
+
+        return (max(0.0, timestamp_seconds - started_at), bool(duration_triggered.get(key, False)))
 
     def _risk_level_for_student(self, alerts: int, behavior_risks: list[str]) -> str:
         if "high" in behavior_risks or alerts >= 4:
@@ -267,6 +368,7 @@ class DetectionService:
         incidents: list[dict[str, Any]],
         frame_identity_counter: Counter[str],
     ) -> list[dict[str, Any]]:
+        # Tong hop incident thanh bang thí sinh de dung cho tab Students va card tong quan.
         student_map: dict[str, dict[str, Any]] = {}
 
         for incident in incidents:
@@ -347,7 +449,7 @@ class DetectionService:
             count += 1
         if self.enable_cell_phone_alerts and mediapipe_signals.get("hand_phone_alert"):
             count += 1
-        if mediapipe_signals.get("face_missing"):
+        if self.enable_face_missing_alerts and mediapipe_signals.get("face_missing"):
             count += 1
         return count
 
@@ -363,20 +465,74 @@ class DetectionService:
             area = max(0.0, (x2 - x1) * (y2 - y1))
             best_area_ratio = max(best_area_ratio, area / frame_area)
             best_confidence = max(best_confidence, float(detection.get("confidence", 0.0)))
-        return best_confidence >= 0.35 and best_area_ratio >= 0.05
+        return best_confidence >= 0.25 and best_area_ratio >= 0.03
 
     def _review_sample_interval_seconds(self) -> float:
         return self.sample_interval_seconds
 
+    def _scale_detections(self, detections: list[dict[str, Any]], scale: float) -> list[dict[str, Any]]:
+        if scale == 1.0:
+            return detections
+
+        scaled: list[dict[str, Any]] = []
+        for item in detections:
+            box = [float(value) * scale for value in item.get("box", [])]
+            scaled.append(
+                {
+                    "label": item.get("label"),
+                    "confidence": float(item.get("confidence", 0.0)),
+                    "box": box,
+                }
+            )
+        return scaled
+
+    def _prepare_mediapipe_inputs(
+        self,
+        frame,
+        detections: list[dict[str, Any]],
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        # MediaPipe khong can frame to bang YOLO; resize rieng giup giam tai CPU/GPU.
+        if cv2 is None:
+            return frame, detections
+
+        frame_height, frame_width = frame.shape[:2]
+        max_dimension = max(frame_height, frame_width)
+        if max_dimension <= self.mediapipe_max_dimension:
+            return frame, detections
+
+        scale = float(self.mediapipe_max_dimension) / float(max_dimension)
+        resized = cv2.resize(
+            frame,
+            (
+                max(1, int(round(frame_width * scale))),
+                max(1, int(round(frame_height * scale))),
+            ),
+            interpolation=cv2.INTER_AREA,
+        )
+        return resized, self._scale_detections(detections, scale)
+
     def _inference_conf_threshold(self) -> float:
+        if self.enable_cell_phone_alerts:
+            return min(self.conf_threshold, 0.25)
         return self.conf_threshold
 
-    def _should_keep_detection(self, label: str, confidence: float) -> bool:
+    def _live_inference_conf_threshold(self) -> float:
+        if self.enable_cell_phone_alerts:
+            return min(self.conf_threshold, self.phone_conf_threshold, 0.20)
+        return self.conf_threshold
+
+    def _phone_keep_threshold(self, *, live_mode: bool = False) -> float:
+        if live_mode:
+            return max(0.18, min(self.phone_conf_threshold, 0.25))
+        return self.phone_conf_threshold
+
+    def _should_keep_detection(self, label: str, confidence: float, *, live_mode: bool = False) -> bool:
         if label in {"cell phone", "mobile phone"}:
-            return confidence >= min(self.conf_threshold, 0.35)
+            return confidence >= self._phone_keep_threshold(live_mode=live_mode)
         return confidence >= self.conf_threshold
 
     def _event_cooldown_seconds(self, event_type: str) -> float:
+        # Moi loai su co co cooldown rieng de tranh ban qua nhieu incident lien tiep.
         if event_type == "gaze":
             return 1.0
         if event_type == "head_pose":
@@ -409,6 +565,8 @@ class DetectionService:
         frame_face_matches: list[dict[str, Any]],
     ) -> bool:
         # Delay missing-face checks to avoid startup jitter and baseline calibration noise.
+        if not self.enable_face_missing_alerts:
+            return False
         if timestamp_seconds < 8.0:
             return False
         if not bool(mediapipe_signals.get("face_missing")):
@@ -429,6 +587,7 @@ class DetectionService:
         person_detections: list[dict[str, Any]],
         mediapipe_signals: dict[str, Any],
     ) -> bool:
+        # Face recognition duoc chay thua hon YOLO/MediaPipe vi chi dung de gan danh tinh.
         has_face_signal = bool(person_detections) or int(mediapipe_signals.get("face_count") or 0) > 0
         if reviewed_frames <= 1:
             return has_face_signal
@@ -454,6 +613,7 @@ class DetectionService:
         reviewed_frames: int,
         cached_payload: dict[str, Any] | None,
     ) -> bool:
+        # Dieu khien tan suat MediaPipe, diem can bang giua do nhay head/gaze va FPS.
         if cached_payload is None:
             return True
         return (reviewed_frames - 1) % self.mediapipe_interval_samples == 0
@@ -535,6 +695,7 @@ class DetectionService:
         mediapipe_signals: dict[str, Any],
         phone_detections: list[dict[str, Any]],
     ) -> bool:
+        # Gaze chi hop le khi dau dang gan nhu thang va khong bi cheu boi phone detection.
         if not self.enable_gaze_alerts:
             return False
         if timestamp_seconds < self.gaze_warmup_seconds:
@@ -560,6 +721,8 @@ class DetectionService:
         person_detections: list[dict[str, Any]],
         streak: int,
     ) -> bool:
+        # Behavior model khong duoc phep ban canh bao "mot minh";
+        # no can score + bang chung ho tro de giam false positive.
         score = float(behavior_prediction.get("score") or 0.0)
         threshold = float(behavior_prediction.get("threshold") or self.behavior_model_service.score_threshold)
         support_count = self._support_signal_count(
@@ -572,11 +735,27 @@ class DetectionService:
             or (self.enable_multiple_people_alerts and len(person_detections) > 1)
             or (self.enable_cell_phone_alerts and bool(mediapipe_signals.get("hand_phone_alert")))
         )
-        face_missing = bool(mediapipe_signals.get("face_missing"))
+        face_missing = self.enable_face_missing_alerts and bool(mediapipe_signals.get("face_missing"))
         if score >= max(0.96, threshold + 0.12):
             return streak >= self.min_signal_streak and (has_hard_evidence or face_missing)
         if score >= threshold and support_count >= 2 and has_hard_evidence:
             return streak >= self.min_signal_streak + 1
+        return False
+
+    def _should_run_behavior_model(
+        self,
+        *,
+        mediapipe_signals: dict[str, Any],
+        phone_detections: list[dict[str, Any]],
+        person_detections: list[dict[str, Any]],
+    ) -> bool:
+        # Cat bo cac frame "binh thuong" de tranh ton chi phi predict XGBoost vo ich.
+        if self.enable_cell_phone_alerts and bool(phone_detections):
+            return True
+        if bool(mediapipe_signals.get("head_pose_alert")):
+            return True
+        if self.enable_gaze_alerts and bool(mediapipe_signals.get("gaze_alert")):
+            return True
         return False
 
     def get_latest_result(self) -> dict[str, Any] | None:
@@ -662,6 +841,22 @@ class DetectionService:
             )
         return results
 
+    def list_result_payloads(self, limit: int = 5) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for file_path in self._iter_result_files()[:limit]:
+            try:
+                data = json.loads(file_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            data["teacher_review"] = self._teacher_review_payload(**(data.get("teacher_review", {}) or {}))
+            data["result_filename"] = file_path.name
+            data["result_path"] = str(file_path)
+            video_path = str(data.get("video_path") or "")
+            if video_path:
+                data["video_name"] = Path(video_path).name
+            results.append(data)
+        return results
+
     def list_historical_students(self, limit_files: int | None = None) -> list[dict[str, Any]]:
         def risk_rank(risk: str | None) -> int:
             return {"high": 3, "medium": 2, "low": 1}.get(str(risk or "low"), 1)
@@ -745,6 +940,7 @@ class DetectionService:
         return str(class_id)
 
     def _prepare_snapshot_dir(self, video_path: Path) -> Path:
+        # Moi lan hau kiem mot video se dung mot thu muc snapshot rieng theo ten file video.
         snapshot_dir = self.results_dir / f"{video_path.stem}_snapshots"
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         for stale_file in snapshot_dir.glob("*.jpg"):
@@ -760,6 +956,7 @@ class DetectionService:
         event_slug: str,
         headline: str,
     ) -> str | None:
+        # Snapshot chi duoc ghi khi thuc su co incident de tranh tao qua nhieu file JPEG.
         if cv2 is None:
             return None
 
@@ -776,6 +973,7 @@ class DetectionService:
         return f"/results/{snapshot_dir.name}/{snapshot_name}"
 
     def _encode_live_snapshot(self, frame, detections: list[dict[str, Any]] | None = None) -> str | None:
+        # Live su dung data URL thay vi file tren dia de frontend nhan nhanh qua JSON.
         if cv2 is None:
             return None
 
@@ -790,11 +988,16 @@ class DetectionService:
         return f"data:image/jpeg;base64,{base64.b64encode(encoded.tobytes()).decode('ascii')}"
 
     def reset_live_session(self) -> dict[str, Any]:
+        # Reset cache/trang thai cho mot phien live moi.
         self._live_review_state = {
             "started_at": time.perf_counter(),
             "reviewed_frames": 0,
             "last_incident_time": {},
             "signal_streaks": {},
+            "signal_active_since": {},
+            "signal_duration_triggered": {},
+            "signal_snapshot_cache": {},
+            "frame_snapshot_cache": {},
             "cached_mediapipe_payload": None,
             "cached_face_identity": None,
             "cached_face_identity_age": self.face_identity_ttl_samples + 1,
@@ -809,11 +1012,50 @@ class DetectionService:
             self.reset_live_session()
         return self._live_review_state or {}
 
-    def _predict_detections(self, frame) -> tuple[list[dict[str, Any]], dict[int, str] | list[str]]:
+    def _cache_live_signal_snapshot(
+        self,
+        state: dict[str, Any],
+        key: str,
+        active: bool,
+        previous_streak: int,
+        snapshot_url: str | None,
+    ) -> None:
+        cache = state.setdefault("signal_snapshot_cache", {})
+        if not active:
+            cache.pop(key, None)
+            return
+        if previous_streak <= 0 and snapshot_url:
+            cache[key] = snapshot_url
+
+    def _get_live_frame_snapshot(
+        self,
+        state: dict[str, Any],
+        frame,
+        detections: list[dict[str, Any]] | None,
+        cache_key: str,
+    ) -> str | None:
+        # Cung mot frame live co the kich hoat nhieu rule; encode 1 lan roi dung lai.
+        cache = state.setdefault("frame_snapshot_cache", {})
+        if cache_key not in cache:
+            cache[cache_key] = self._encode_live_snapshot(frame, detections)
+        return cache.get(cache_key)
+
+    def _consume_live_signal_snapshot(
+        self,
+        state: dict[str, Any],
+        key: str,
+        fallback_snapshot_url: str | None,
+    ) -> str | None:
+        cache = state.setdefault("signal_snapshot_cache", {})
+        cached_snapshot = cache.pop(key, None)
+        return cached_snapshot or fallback_snapshot_url
+
+    def _predict_detections(self, frame, *, live_mode: bool = False) -> tuple[list[dict[str, Any]], dict[int, str] | list[str]]:
+        # Wrapper chung cho YOLO, dung cho ca live va video review.
         model = self._load_model()
         prediction = model.predict(
             source=frame,
-            conf=self._inference_conf_threshold(),
+            conf=self._live_inference_conf_threshold() if live_mode else self._inference_conf_threshold(),
             verbose=False,
         )[0]
         names = prediction.names if prediction.names is not None else {}
@@ -827,7 +1069,7 @@ class DetectionService:
             for class_id, confidence, coord in zip(class_ids, confidences, coordinates):
                 label = self._label_for_class(names, int(class_id))
                 confidence_value = float(confidence)
-                if not self._should_keep_detection(label=label, confidence=confidence_value):
+                if not self._should_keep_detection(label=label, confidence=confidence_value, live_mode=live_mode):
                     continue
                 detections.append(
                     {
@@ -847,14 +1089,17 @@ class DetectionService:
         return cleaned
 
     def analyze_live_frame(self, frame) -> dict[str, Any]:
+        # Luong live: mot frame webcam vao -> tra ve trang thai hien tai + incident moi neu co.
         self.apply_runtime_settings(get_ai_settings())
         state = self._ensure_live_session()
+        state["frame_snapshot_cache"] = {}
         timestamp_seconds = max(0.0, time.perf_counter() - float(state.get("started_at") or time.perf_counter()))
         clock_timestamp = self._format_clock_timestamp()
         reviewed_frames = int(state.get("reviewed_frames") or 0) + 1
         state["reviewed_frames"] = reviewed_frames
 
-        detections, _ = self._predict_detections(frame)
+        # 1) YOLO phat hien person/phone tren frame live.
+        detections, _ = self._predict_detections(frame, live_mode=True)
         person_detections = [item for item in detections if item["label"] == "person"]
         phone_detections = [item for item in detections if item["label"] in {"cell phone", "mobile phone"}]
 
@@ -876,10 +1121,11 @@ class DetectionService:
             "message": mediapipe_status.get("message", "MediaPipe unavailable."),
         }
         if mediapipe_status.get("enabled") and self.mediapipe_feature_service is not None:
-            # Live test needs fresh head/gaze signals on each submitted webcam frame.
+            # 2) Live uu tien do nhay, nen MediaPipe duoc refresh tren moi frame gui len.
+            mediapipe_frame, mediapipe_detections = self._prepare_mediapipe_inputs(frame, detections)
             state["cached_mediapipe_payload"] = self.mediapipe_feature_service.extract(
-                frame_bgr=frame,
-                yolo_detections=detections,
+                frame_bgr=mediapipe_frame,
+                yolo_detections=mediapipe_detections,
             )
             if state.get("cached_mediapipe_payload") is not None:
                 mediapipe_payload = state["cached_mediapipe_payload"]
@@ -893,6 +1139,7 @@ class DetectionService:
             state.get("cached_face_identity"),
             int(state.get("cached_face_identity_age") or 0),
         )
+        # 3) Face recognition chay co chu ky va co cache danh tinh de giam tai.
         if face_recognition_status.get("enabled") and self.face_recognition_service is not None:
             if self._should_refresh_face_identity(
                 reviewed_frames=reviewed_frames,
@@ -926,12 +1173,28 @@ class DetectionService:
         incidents: list[dict[str, Any]] = []
         last_incident_time = state["last_incident_time"]
         signal_streaks = state["signal_streaks"]
+        signal_active_since = state["signal_active_since"]
+        signal_duration_triggered = state["signal_duration_triggered"]
 
+        # 4) Danh gia tung rule live va them incident moi neu vuot nguong.
         previous_multiple_people_streak = signal_streaks.get("multiple_people", 0)
+        multiple_people_active = self.enable_multiple_people_alerts and len(person_detections) > 1
         multiple_people_streak = self._advance_streak(
             signal_streaks,
             "multiple_people",
-            self.enable_multiple_people_alerts and len(person_detections) > 1,
+            multiple_people_active,
+        )
+        multiple_people_snapshot = (
+            self._get_live_frame_snapshot(state, frame, person_detections, "people")
+            if multiple_people_active
+            else None
+        )
+        self._cache_live_signal_snapshot(
+            state,
+            "multiple_people",
+            multiple_people_active,
+            previous_multiple_people_streak,
+            multiple_people_snapshot,
         )
         if (
             self._crossed_streak_threshold(
@@ -951,7 +1214,11 @@ class DetectionService:
                         "confidence": f"{max(item['confidence'] for item in person_detections) * 100:.0f}%",
                         "risk": "high",
                         "event_type": "multiple_people",
-                        "snapshot_url": self._encode_live_snapshot(frame, person_detections),
+                        "snapshot_url": self._consume_live_signal_snapshot(
+                            state,
+                            "multiple_people",
+                            multiple_people_snapshot,
+                        ),
                     },
                     identity=incident_identity,
                 )
@@ -959,10 +1226,23 @@ class DetectionService:
             last_incident_time["multiple_people"] = timestamp_seconds
 
         previous_phone_streak = signal_streaks.get("cell_phone", 0)
+        phone_active = self.enable_cell_phone_alerts and bool(phone_detections)
         phone_streak = self._advance_streak(
             signal_streaks,
             "cell_phone",
-            self.enable_cell_phone_alerts and bool(phone_detections),
+            phone_active,
+        )
+        phone_snapshot = (
+            self._get_live_frame_snapshot(state, frame, phone_detections, "phone")
+            if phone_active
+            else None
+        )
+        self._cache_live_signal_snapshot(
+            state,
+            "cell_phone",
+            phone_active,
+            previous_phone_streak,
+            phone_snapshot,
         )
         strong_phone_signal = self.enable_cell_phone_alerts and self._phone_signal_is_strong(
             phone_detections=phone_detections,
@@ -989,29 +1269,46 @@ class DetectionService:
                         "confidence": f"{max(item['confidence'] for item in phone_detections) * 100:.0f}%",
                         "risk": "high",
                         "event_type": "cell_phone",
-                        "snapshot_url": self._encode_live_snapshot(frame, phone_detections),
+                        "snapshot_url": self._consume_live_signal_snapshot(
+                            state,
+                            "cell_phone",
+                            phone_snapshot,
+                        ),
                     },
                     identity=incident_identity,
                 )
             )
             last_incident_time["cell_phone"] = timestamp_seconds
 
+        head_pose_active = bool(
+            mediapipe_signals.get("head_pose_strong")
+            and mediapipe_features.get("head_pose") in {"left", "right", "down"}
+            and not phone_detections
+            and len(person_detections) <= 1
+        ) or bool(
+            mediapipe_signals.get("head_pose_alert")
+            and mediapipe_features.get("head_pose") == "up"
+            and not phone_detections
+            and len(person_detections) <= 1
+        )
         previous_head_pose_streak = signal_streaks.get("head_pose", 0)
         head_pose_streak = self._advance_streak(
             signal_streaks,
             "head_pose",
-            bool(
-                mediapipe_signals.get("head_pose_strong")
-                and mediapipe_features.get("head_pose") in {"left", "right", "down"}
-                and not phone_detections
-                and len(person_detections) <= 1
-            )
-            or bool(
-                mediapipe_signals.get("head_pose_alert")
-                and mediapipe_features.get("head_pose") == "up"
-                and not phone_detections
-                and len(person_detections) <= 1
-            ),
+            head_pose_active,
+        )
+        head_pose_snapshot_targets = person_detections or detections[:1]
+        head_pose_snapshot = (
+            self._get_live_frame_snapshot(state, frame, head_pose_snapshot_targets, "head_pose")
+            if head_pose_active
+            else None
+        )
+        self._cache_live_signal_snapshot(
+            state,
+            "head_pose",
+            head_pose_active,
+            previous_head_pose_streak,
+            head_pose_snapshot,
         )
         if (
             self._crossed_streak_threshold(
@@ -1033,7 +1330,11 @@ class DetectionService:
                         "confidence": "92%" if mediapipe_signals.get("head_pose_strong") else "82%",
                         "risk": "medium",
                         "event_type": "head_pose",
-                        "snapshot_url": self._encode_live_snapshot(frame, person_detections or detections[:1]),
+                        "snapshot_url": self._consume_live_signal_snapshot(
+                            state,
+                            "head_pose",
+                            head_pose_snapshot,
+                        ),
                         "details": self._head_pose_details(head_pose, head_pose_strength),
                     },
                     identity=incident_identity,
@@ -1042,15 +1343,29 @@ class DetectionService:
             last_incident_time["head_pose"] = timestamp_seconds
 
         previous_gaze_streak = signal_streaks.get("gaze", 0)
+        gaze_active = self._is_gaze_signal_active(
+            timestamp_seconds=timestamp_seconds,
+            mediapipe_features=mediapipe_features,
+            mediapipe_signals=mediapipe_signals,
+            phone_detections=phone_detections,
+        )
         gaze_streak = self._advance_streak(
             signal_streaks,
             "gaze",
-            self._is_gaze_signal_active(
-                timestamp_seconds=timestamp_seconds,
-                mediapipe_features=mediapipe_features,
-                mediapipe_signals=mediapipe_signals,
-                phone_detections=phone_detections,
-            ),
+            gaze_active,
+        )
+        gaze_snapshot_targets = person_detections or detections[:1]
+        gaze_snapshot = (
+            self._get_live_frame_snapshot(state, frame, gaze_snapshot_targets, "gaze")
+            if gaze_active
+            else None
+        )
+        self._cache_live_signal_snapshot(
+            state,
+            "gaze",
+            gaze_active,
+            previous_gaze_streak,
+            gaze_snapshot,
         )
         if (
             self._crossed_streak_threshold(
@@ -1075,7 +1390,11 @@ class DetectionService:
                         ),
                         "risk": "medium",
                         "event_type": "gaze",
-                        "snapshot_url": self._encode_live_snapshot(frame, person_detections or detections[:1]),
+                        "snapshot_url": self._consume_live_signal_snapshot(
+                            state,
+                            "gaze",
+                            gaze_snapshot,
+                        ),
                         "details": self._gaze_details(direction),
                     },
                     identity=incident_identity,
@@ -1084,16 +1403,29 @@ class DetectionService:
             last_incident_time["gaze"] = timestamp_seconds
 
         previous_face_missing_streak = signal_streaks.get("face_missing", 0)
+        face_missing_active = self._is_face_missing_signal_active(
+            timestamp_seconds=timestamp_seconds,
+            mediapipe_signals=mediapipe_signals,
+            person_detections=person_detections,
+            frame_identity=frame_identity,
+            frame_face_matches=frame_face_matches,
+        )
         face_missing_streak = self._advance_streak(
             signal_streaks,
             "face_missing",
-            self._is_face_missing_signal_active(
-                timestamp_seconds=timestamp_seconds,
-                mediapipe_signals=mediapipe_signals,
-                person_detections=person_detections,
-                frame_identity=frame_identity,
-                frame_face_matches=frame_face_matches,
-            ),
+            face_missing_active,
+        )
+        face_missing_snapshot = (
+            self._get_live_frame_snapshot(state, frame, [], "face_missing")
+            if face_missing_active
+            else None
+        )
+        self._cache_live_signal_snapshot(
+            state,
+            "face_missing",
+            face_missing_active,
+            previous_face_missing_streak,
+            face_missing_snapshot,
         )
         if (
             self._crossed_streak_threshold(
@@ -1113,13 +1445,18 @@ class DetectionService:
                         "confidence": "80%",
                         "risk": "low",
                         "event_type": "face_missing",
-                        "snapshot_url": self._encode_live_snapshot(frame, []),
+                        "snapshot_url": self._consume_live_signal_snapshot(
+                            state,
+                            "face_missing",
+                            face_missing_snapshot,
+                        ),
                     },
                     identity=incident_identity,
                 )
             )
             last_incident_time["face_missing"] = timestamp_seconds
 
+        # 5) Luu lich su incident gan nhat de giao dien live co the ve timeline nho.
         history = list(state.get("history") or [])
         for incident in incidents:
             item = dict(incident)
@@ -1144,6 +1481,11 @@ class DetectionService:
         }
 
     def detect_from_video(self, video_path: str | Path) -> dict[str, Any]:
+        # Luong hau kiem chinh:
+        # - doc video
+        # - lay mau theo interval
+        # - YOLO/MediaPipe/Face/Behavior
+        # - tong hop incidents + students_report + metrics
         self.apply_runtime_settings(get_ai_settings())
         source_path = Path(video_path)
         if not source_path.exists():
@@ -1164,7 +1506,7 @@ class DetectionService:
                         "effective_extraction_interval_seconds": self._review_sample_interval_seconds(),
                     },
                     "mediapipe": self._mediapipe_status(),
-                    "behavior_model": self.behavior_model_service.get_status(),
+                    "behavior_model": self._behavior_model_status(),
                     "face_recognition": self._face_recognition_status(),
                 },
                 "message": "Thieu OpenCV. Cai `pip install opencv-python-headless` de bat hau kiem YOLO.",
@@ -1189,7 +1531,7 @@ class DetectionService:
                         "effective_extraction_interval_seconds": self._review_sample_interval_seconds(),
                     },
                     "mediapipe": self._mediapipe_status(),
-                    "behavior_model": self.behavior_model_service.get_status(),
+                    "behavior_model": self._behavior_model_status(),
                     "face_recognition": self._face_recognition_status(),
                 },
                 "message": str(exc),
@@ -1215,11 +1557,13 @@ class DetectionService:
         frame_index = 0
         last_incident_time: dict[str, float] = {}
         signal_streaks: dict[str, int] = {}
+        signal_active_since: dict[str, float] = {}
+        signal_duration_triggered: dict[str, bool] = {}
         frame_identity_counter: Counter[str] = Counter()
         cached_mediapipe_payload: dict[str, Any] | None = None
         cached_face_identity: dict[str, Any] | None = None
         cached_face_identity_age = self.face_identity_ttl_samples + 1
-        behavior_status = self.behavior_model_service.get_status()
+        behavior_status = self._behavior_model_status()
         mediapipe_status = self._mediapipe_status()
         face_recognition_status = self._face_recognition_status()
         yolo_inference_ms_total = 0.0
@@ -1248,6 +1592,7 @@ class DetectionService:
                     frame_index += 1
                     continue
 
+                # 1) Chi xu ly cac frame mau, khong xu ly toan bo video.
                 reviewed_frames += 1
                 timestamp_seconds = frame_index / fps
                 prediction = model.predict(
@@ -1285,6 +1630,7 @@ class DetectionService:
                             }
                         )
 
+                # 2) Tach nhanh cac nhom detection can cho rule phia sau.
                 person_detections = [item for item in detections if item["label"] == "person"]
                 phone_detections = [
                     item for item in detections if item["label"] in {"cell phone", "mobile phone"}
@@ -1305,15 +1651,19 @@ class DetectionService:
                     },
                     "message": mediapipe_status.get("message", "MediaPipe unavailable."),
                 }
+                mediapipe_payload_fresh = False
+                # 3) MediaPipe duoc refresh theo chu ky rieng de can bang giua do nhay va FPS.
                 if mediapipe_status.get("enabled") and self.mediapipe_feature_service is not None:
                     if self._should_refresh_mediapipe(
                         reviewed_frames=reviewed_frames,
                         cached_payload=cached_mediapipe_payload,
                     ):
+                        mediapipe_frame, mediapipe_detections = self._prepare_mediapipe_inputs(frame, detections)
                         cached_mediapipe_payload = self.mediapipe_feature_service.extract(
-                            frame_bgr=frame,
-                            yolo_detections=detections,
+                            frame_bgr=mediapipe_frame,
+                            yolo_detections=mediapipe_detections,
                         )
+                        mediapipe_payload_fresh = True
                         mediapipe_status = self.mediapipe_feature_service.get_status()
                     if cached_mediapipe_payload is not None:
                         mediapipe_payload = cached_mediapipe_payload
@@ -1324,6 +1674,7 @@ class DetectionService:
                 frame_face_matches: list[dict[str, Any]] = []
                 frame_identity: dict[str, Any] | None = None
                 incident_identity = self._get_cached_identity(cached_face_identity, cached_face_identity_age)
+                # 4) Gan danh tinh cho incident va cache lai neu da nhan dien duoc.
                 if face_recognition_status.get("enabled") and self.face_recognition_service is not None:
                     if self._should_refresh_face_identity(
                         reviewed_frames=reviewed_frames,
@@ -1355,6 +1706,7 @@ class DetectionService:
                     if incident_identity is None:
                         cached_face_identity = None
 
+                # 5) Chay lan luot cac rule incident "truc tiep" tu vision.
                 previous_multiple_people_streak = signal_streaks.get("multiple_people", 0)
                 multiple_people_streak = self._advance_streak(
                     signal_streaks,
@@ -1446,14 +1798,12 @@ class DetectionService:
                     )
                     last_incident_time["cell_phone"] = timestamp_seconds
 
-                previous_head_pose_streak = signal_streaks.get("head_pose", 0)
-                head_pose_streak = self._advance_streak(
-                    signal_streaks,
-                    "head_pose",
-                    video_startup_guard_passed
-                    and (
+                head_pose_duration_triggered = bool(signal_duration_triggered.get("head_pose", False))
+                head_pose_duration = 0.0
+                if mediapipe_payload_fresh:
+                    head_pose_active = video_startup_guard_passed and (
                         bool(
-                            mediapipe_signals.get("head_pose_strong")
+                            mediapipe_signals.get("head_pose_alert")
                             and mediapipe_features.get("head_pose") in {"left", "right", "down"}
                             and not phone_detections
                             and len(person_detections) <= 1
@@ -1464,14 +1814,19 @@ class DetectionService:
                             and not phone_detections
                             and len(person_detections) <= 1
                         )
-                    ),
-                )
-                if (
-                    self._crossed_streak_threshold(
-                        previous_head_pose_streak,
-                        head_pose_streak,
-                        self._event_required_streak("head_pose"),
                     )
+                    head_pose_duration, head_pose_duration_triggered = self._track_signal_duration(
+                        active_since=signal_active_since,
+                        duration_triggered=signal_duration_triggered,
+                        key="head_pose",
+                        active=head_pose_active,
+                        timestamp_seconds=timestamp_seconds,
+                    )
+                if (
+                    mediapipe_payload_fresh
+                    and
+                    head_pose_duration >= self._required_signal_duration_seconds("head_pose")
+                    and not head_pose_duration_triggered
                     and timestamp_seconds - last_incident_time.get("head_pose", -999.0)
                     >= self._event_cooldown_seconds("head_pose")
                 ):
@@ -1504,19 +1859,24 @@ class DetectionService:
                         )
                     )
                     last_incident_time["head_pose"] = timestamp_seconds
+                    signal_duration_triggered["head_pose"] = True
 
                 previous_gaze_streak = signal_streaks.get("gaze", 0)
-                gaze_streak = self._advance_streak(
-                    signal_streaks,
-                    "gaze",
-                    self._is_gaze_signal_active(
-                        timestamp_seconds=timestamp_seconds,
-                        mediapipe_features=mediapipe_features,
-                        mediapipe_signals=mediapipe_signals,
-                        phone_detections=phone_detections,
-                    ),
-                )
+                gaze_streak = previous_gaze_streak
+                if mediapipe_payload_fresh:
+                    gaze_streak = self._advance_streak(
+                        signal_streaks,
+                        "gaze",
+                        self._is_gaze_signal_active(
+                            timestamp_seconds=timestamp_seconds,
+                            mediapipe_features=mediapipe_features,
+                            mediapipe_signals=mediapipe_signals,
+                            phone_detections=phone_detections,
+                        ),
+                    )
                 if (
+                    mediapipe_payload_fresh
+                    and
                     self._crossed_streak_threshold(
                         previous_gaze_streak,
                         gaze_streak,
@@ -1634,7 +1994,12 @@ class DetectionService:
                     )
                     last_incident_time["face_missing"] = timestamp_seconds
 
-                if behavior_status.get("enabled"):
+                # 6) Behavior model la lop tong hop bo sung, chi chay khi da co dau hieu so bo.
+                if behavior_status.get("enabled") and self._should_run_behavior_model(
+                    mediapipe_signals=mediapipe_signals,
+                    phone_detections=phone_detections,
+                    person_detections=person_detections,
+                ):
                     behavior_features = self.behavior_model_service.build_feature_record(
                         detections,
                         vision_features=mediapipe_features,
@@ -1650,7 +2015,7 @@ class DetectionService:
                                 (self.enable_cell_phone_alerts and phone_detections)
                                 or (self.enable_multiple_people_alerts and len(person_detections) > 1)
                                 or (self.enable_cell_phone_alerts and mediapipe_signals.get("hand_phone_alert"))
-                                or mediapipe_signals.get("face_missing")
+                                or (self.enable_face_missing_alerts and mediapipe_signals.get("face_missing"))
                             )
                         ),
                     )
@@ -1720,6 +2085,10 @@ class DetectionService:
                 if str(incident.get("candidate_id") or "UNKNOWN") == "UNKNOWN":
                     incident.update(self._identity_payload(dominant_identity))
 
+        # 7) Hau xu ly ket qua:
+        # - chon identity uu the
+        # - gop incident sat nhau
+        # - tong hop thanh bao cao/metrics
         incidents = self._deduplicate_incidents_per_second(incidents)
 
         students_report = self._build_students_report(
