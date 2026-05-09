@@ -1,4 +1,5 @@
 import csv
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from html import escape
 from io import StringIO
@@ -196,6 +197,112 @@ def _merge_students_for_dashboard(latest_students: list[dict], historical_studen
     return merged
 
 
+def _room_sort_key(room_name: str) -> tuple[int, str]:
+    normalized = str(room_name or "").strip()
+    if not normalized:
+        return (1, "")
+    return (0, normalized.casefold())
+
+
+def _build_room_cards(students: list[dict]) -> list[dict[str, object]]:
+    rooms: dict[str, dict[str, object]] = {}
+
+    for student in students:
+        if not isinstance(student, dict):
+            continue
+        room_name = str(student.get("room") or "").strip()
+        if not room_name:
+            continue
+
+        card = rooms.get(room_name)
+        if card is None:
+            card = {
+                "room_name": room_name,
+                "room_subtitle": "Du lieu hau kiem hien co",
+                "student_count": 0,
+                "alert_count": 0,
+                "high_risk_count": 0,
+                "confirmed_count": 0,
+                "review_count": 0,
+            }
+            rooms[room_name] = card
+
+        card["student_count"] = int(card["student_count"]) + 1
+        card["alert_count"] = int(card["alert_count"]) + int(student.get("alerts") or 0)
+        card["review_count"] = int(card["review_count"]) + int(student.get("review_count") or 0)
+
+        if str(student.get("risk") or "").strip().lower() == "high":
+            card["high_risk_count"] = int(card["high_risk_count"]) + 1
+
+        teacher_review = student.get("teacher_review") if isinstance(student.get("teacher_review"), dict) else {}
+        if str(teacher_review.get("status") or "").strip().lower() == "confirmed":
+            card["confirmed_count"] = int(card["confirmed_count"]) + 1
+
+    room_cards: list[dict[str, object]] = []
+    for room_name in sorted(rooms.keys(), key=_room_sort_key):
+        card = rooms[room_name]
+        student_count = int(card["student_count"])
+        alert_count = int(card["alert_count"])
+        high_risk_count = int(card["high_risk_count"])
+        confirmed_count = int(card["confirmed_count"])
+        review_count = int(card["review_count"])
+
+        status = "processing"
+        badge_label = "Processing"
+        preview_variant = "blue"
+        status_copy = "Dang co du lieu hau kiem"
+        status_copy_class = "warning-copy"
+        signal_count = min(4, max(1, student_count))
+        card_class = ""
+
+        if confirmed_count > 0 or high_risk_count > 0:
+            status = "suspended"
+            badge_label = "Suspended"
+            preview_variant = "danger"
+            status_copy = (
+                f"{confirmed_count} ket luan gian lan"
+                if confirmed_count > 0
+                else f"{high_risk_count} thi sinh rui ro cao"
+            )
+            status_copy_class = "danger-copy"
+            signal_count = 4
+            card_class = "danger"
+        elif alert_count <= 0:
+            status = "completed"
+            badge_label = "Completed"
+            preview_variant = "neutral"
+            status_copy = "Khong co canh bao"
+            status_copy_class = "safe-copy"
+            signal_count = max(1, min(2, student_count))
+        elif alert_count >= 3:
+            status = "processing"
+            badge_label = "Processing"
+            preview_variant = "gold"
+            status_copy = f"{alert_count} canh bao"
+            status_copy_class = "warning-copy"
+            signal_count = min(4, max(2, alert_count))
+        else:
+            status_copy = f"{alert_count} canh bao"
+
+        room_cards.append(
+            {
+                "room_name": room_name,
+                "room_subtitle": f"{student_count} thi sinh, {review_count} lan hau kiem",
+                "room_count_label": f"{student_count} thi sinh",
+                "status": status,
+                "badge_label": badge_label,
+                "preview_variant": preview_variant,
+                "status_copy": status_copy,
+                "status_copy_class": status_copy_class,
+                "signal_count": signal_count,
+                "card_class": card_class,
+                "href": f"/?{urlencode({'tab': 'students', 'students_room': room_name})}",
+            }
+        )
+
+    return room_cards
+
+
 def _risk_label_vi(risk: str) -> str:
     return {"high": "CAO", "medium": "TRUNG BINH", "low": "THAP"}.get(str(risk or "low"), "THAP")
 
@@ -253,6 +360,123 @@ def _format_mmss(seconds: float) -> str:
     minutes = total_seconds // 60
     remain_seconds = total_seconds % 60
     return f"{minutes:02d}:{remain_seconds:02d}"
+
+
+def _parse_iso_datetime(raw_value: str | None) -> datetime | None:
+    raw_text = str(raw_value or "").strip()
+    if not raw_text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw_text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _coerce_float(raw_value) -> float | None:
+    if isinstance(raw_value, (int, float)):
+        return float(raw_value)
+    return None
+
+
+def _incident_category_label(incident: dict) -> str:
+    event_type = str(incident.get("event_type") or "").strip().lower()
+    if event_type in {"cell_phone", "hand_phone"}:
+        return "Dung dien thoai"
+    if event_type == "multiple_people":
+        return "Them nguoi"
+    if event_type == "face_missing":
+        return "Roi khung hinh"
+    if event_type == "gaze":
+        return "Liec mat bat thuong"
+    if event_type == "head_pose":
+        return "Quay dau bat thuong"
+    if event_type == "behavior_model":
+        return "Mo hinh hanh vi nghi van"
+
+    label = str(incident.get("label") or "").strip()
+    return label or "Khac"
+
+
+def build_anomaly_type_metrics(reviews: list[dict], hours: int = 24, limit_rows: int = 3) -> list[dict[str, str | int]]:
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours or 24)))
+    counter: Counter[str] = Counter()
+    total_incidents = 0
+
+    for review in reviews:
+        created_at = _parse_iso_datetime(review.get("created_at"))
+        if created_at is not None and created_at < cutoff:
+            continue
+        for incident in review.get("incidents") or []:
+            if not isinstance(incident, dict):
+                continue
+            label = _incident_category_label(incident)
+            counter[label] += 1
+            total_incidents += 1
+
+    if total_incidents <= 0:
+        return [{"label": "Chua co canh bao", "percentage_label": "0%", "count": 0}]
+
+    rows: list[dict[str, str | int]] = []
+    for label, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))[: max(1, limit_rows)]:
+        percentage = round((count / total_incidents) * 100)
+        rows.append(
+            {
+                "label": label,
+                "percentage_label": f"{percentage}%",
+                "count": int(count),
+            }
+        )
+    return rows
+
+
+def build_processing_power_bars(reviews: list[dict], limit: int = 10) -> list[dict[str, str | int | float]]:
+    points: list[dict[str, float | str]] = []
+
+    for review in reviews:
+        summary = review.get("summary", {}) if isinstance(review, dict) else {}
+        fps_value = _coerce_float(summary.get("effective_processing_fps"))
+        latency_ms = _coerce_float(summary.get("avg_frame_processing_ms"))
+        if latency_ms is None:
+            latency_ms = _coerce_float(summary.get("yolo_avg_pipeline_ms"))
+
+        if fps_value is None and latency_ms and latency_ms > 0:
+            fps_value = round(1000.0 / latency_ms, 2)
+
+        if fps_value is None or fps_value <= 0:
+            continue
+
+        created_at = _parse_iso_datetime(review.get("created_at"))
+        label = created_at.astimezone(VIETNAM_TZ).strftime("%H:%M") if created_at is not None else "N/A"
+        points.append(
+            {
+                "value": fps_value,
+                "label": label,
+                "tooltip": f"{label}: {fps_value:.2f} FPS",
+            }
+        )
+
+    if not points:
+        return []
+
+    points = points[: max(1, limit)]
+    points.reverse()
+    max_value = max(float(point["value"]) for point in points)
+    bars: list[dict[str, str | int | float]] = []
+    for point in points:
+        value = float(point["value"])
+        height = 0 if max_value <= 0 else max(12, int(round((value / max_value) * 100)))
+        bars.append(
+            {
+                "value": value,
+                "height": height,
+                "label": str(point["label"]),
+                "tooltip": str(point["tooltip"]),
+            }
+        )
+    return bars
 
 
 def build_violation_trend(
@@ -367,8 +591,10 @@ def build_performance_metrics(latest_review: dict) -> dict:
 
     if isinstance(latency_ms, (int, float)):
         latency_label = f"~{latency_ms:.0f}ms"
+        latency_seconds_label = f"{(float(latency_ms) / 1000.0):.2f}s"
     else:
         latency_label = "--"
+        latency_seconds_label = "--"
 
     if isinstance(gpu_percent, (int, float)):
         gpu_label = f"{gpu_percent:.1f}%"
@@ -385,6 +611,7 @@ def build_performance_metrics(latest_review: dict) -> dict:
 
     return {
         "latency_label": latency_label,
+        "latency_seconds_label": latency_seconds_label,
         "gpu_label": gpu_label,
         "note": note,
     }
@@ -560,6 +787,7 @@ def build_dashboard_context(request: Request) -> dict:
     selected_tab = request.query_params.get("tab", "overview")
     if selected_tab not in VALID_TABS:
         selected_tab = "overview"
+    review_candidate_id = str(request.query_params.get("review_candidate_id") or "").strip()
 
     upload_status = request.query_params.get("upload_status")
     upload_message = request.query_params.get("upload_message")
@@ -575,7 +803,44 @@ def build_dashboard_context(request: Request) -> dict:
 
     recent_uploads = video_service.list_uploads()
     recent_results = build_recent_review_payloads(recent_uploads, limit=8)
+    analytics_reviews = build_recent_review_payloads(recent_uploads, limit=50)
     latest_review = build_latest_review_payload(recent_uploads, recent_results)
+    if review_candidate_id:
+        matching_review = next(
+            (
+                review
+                for review in recent_results
+                if review_candidate_id == str(review.get("review_candidate", {}).get("candidate_id") or "").strip()
+                or review_candidate_id == str(review.get("primary_candidate", {}).get("candidate_id") or "").strip()
+                or any(
+                    review_candidate_id == str(item.get("candidate_id") or "").strip()
+                    for item in (review.get("students_report") or [])
+                    if isinstance(item, dict)
+                )
+                or any(
+                    review_candidate_id == str(item.get("candidate_id") or "").strip()
+                    for item in (review.get("incidents") or [])
+                    if isinstance(item, dict)
+                )
+            ),
+            None,
+        )
+        if matching_review is None:
+            raw_review = sql_storage_service.get_latest_review_result_for_candidate(review_candidate_id)
+            if raw_review is None:
+                raw_review = detection_service.get_latest_result_payload_for_candidate(review_candidate_id)
+            if raw_review is not None:
+                matching_review = _hydrate_review_payload(raw_review)
+                if not any(
+                    (
+                        str(item.get("result_path") or "").strip() == str(matching_review.get("result_path") or "").strip()
+                        and str(item.get("video_path") or "").strip() == str(matching_review.get("video_path") or "").strip()
+                    )
+                    for item in recent_results
+                ):
+                    recent_results.insert(0, matching_review)
+        if matching_review is not None:
+            latest_review = dict(matching_review)
     ai_settings = get_ai_settings()
     historical_students = sql_storage_service.list_candidate_histories(limit=250)
     if not historical_students:
@@ -590,12 +855,16 @@ def build_dashboard_context(request: Request) -> dict:
     source_students = _merge_students_for_dashboard(latest_students_report, historical_students)
     dashboard_payload["students"] = [dict(student) for student in source_students]
     student_items = dashboard_payload.get("students", [])
+    room_cards = _build_room_cards(student_items if isinstance(student_items, list) else [])
     students_total = len(student_items)
     students_high_risk = len([item for item in student_items if str(item.get("risk") or "") == "high"])
+    dashboard_payload["overview"]["rooms_online"] = len(room_cards)
 
     review_candidate = dict(latest_review.get("review_candidate") or {})
     review_risk_message = str(latest_review.get("review_risk_message") or "Chua ghi nhan su co trong lan hau kiem nay.")
     performance_metrics = build_performance_metrics(latest_review)
+    anomaly_type_metrics = build_anomaly_type_metrics(analytics_reviews, hours=24, limit_rows=3)
+    processing_power_bars = build_processing_power_bars(analytics_reviews, limit=10)
     recent_incident_timestamps = sql_storage_service.list_recent_incident_timestamps(hours=24)
     violation_trend = build_violation_trend(
         latest_review,
@@ -618,6 +887,9 @@ def build_dashboard_context(request: Request) -> dict:
         "review_risk_message": review_risk_message,
         "students_total": students_total,
         "students_high_risk": students_high_risk,
+        "room_cards": room_cards,
+        "anomaly_type_metrics": anomaly_type_metrics,
+        "processing_power_bars": processing_power_bars,
         "violation_trend": violation_trend,
         "system_status": system_status,
         "performance_metrics": performance_metrics,
@@ -959,5 +1231,28 @@ async def update_review_decision(payload: ReviewDecisionPayload) -> JSONResponse
             "status": "success",
             "message": success_message,
             "teacher_review": teacher_review,
+        }
+    )
+
+
+@router.get("/review/candidate/{candidate_id}", tags=["web"])
+async def get_candidate_review(candidate_id: str) -> JSONResponse:
+    normalized_candidate_id = str(candidate_id or "").strip()
+    if not normalized_candidate_id:
+        return JSONResponse({"status": "error", "message": "Ma thi sinh khong hop le."}, status_code=400)
+
+    review_payload = sql_storage_service.get_latest_review_result_for_candidate(normalized_candidate_id)
+    if review_payload is None:
+        review_payload = detection_service.get_latest_result_payload_for_candidate(normalized_candidate_id)
+    if review_payload is None:
+        return JSONResponse(
+            {"status": "error", "message": "Khong tim thay lan hau kiem gan nhat cua thi sinh nay."},
+            status_code=404,
+        )
+
+    return JSONResponse(
+        {
+            "status": "success",
+            "review": _hydrate_review_payload(review_payload),
         }
     )

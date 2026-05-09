@@ -202,26 +202,45 @@
             </div>
 
             <div class="room-grid">
-              <article class="room-card">
-                <div class="room-preview room-preview-blue"><span class="room-badge success">Processing</span></div>
-                <div class="room-copy"><div><p class="room-name">Room A</p><small>Main Lecture Hall</small></div><p class="room-count">42 / 50</p></div>
-                <div class="room-status"><div class="signal-dots"><span></span><span></span><span></span></div><small class="warning-copy">3 Warnings</small></div>
-              </article>
-              <article class="room-card">
-                <div class="room-preview room-preview-neutral"><span class="room-badge muted">Completed</span></div>
-                <div class="room-copy"><div><p class="room-name">Room B</p><small>Computer Lab 2</small></div><p class="room-count">24 / 24</p></div>
-                <div class="room-status"><div class="signal-dots"><span></span><span></span></div><small class="safe-copy">No Violations</small></div>
-              </article>
-              <article class="room-card">
-                <div class="room-preview room-preview-gold"><span class="room-badge success">Processing</span></div>
-                <div class="room-copy"><div><p class="room-name">Room C</p><small>Seminar Wing</small></div><p class="room-count">12 / 15</p></div>
-                <div class="room-status"><div class="signal-dots"><span></span></div><small class="warning-copy">1 Warning</small></div>
-              </article>
-              <article class="room-card danger">
-                <div class="room-preview room-preview-danger"><span class="room-badge danger">Suspended</span></div>
-                <div class="room-copy"><div><p class="room-name">Room D</p><small>Science Block</small></div><p class="room-count">30 / 30</p></div>
-                <div class="room-status"><div class="signal-dots"><span></span><span></span><span></span><span></span></div><small class="danger-copy">Critical Breach</small></div>
-              </article>
+              {% for room in room_cards %}
+                <a class="room-card {% if room.card_class %}{{ room.card_class }}{% endif %}" href="{{ room.href }}" data-room-filter="{{ room.room_name }}">
+                  <div class="room-preview room-preview-{{ room.preview_variant }}">
+                    <span class="room-badge {% if room.status == 'suspended' %}danger{% elif room.status == 'completed' %}muted{% else %}success{% endif %}">
+                      {{ room.badge_label }}
+                    </span>
+                  </div>
+                  <div class="room-copy">
+                    <div>
+                      <p class="room-name">{{ room.room_name }}</p>
+                      <small>{{ room.room_subtitle }}</small>
+                    </div>
+                    <p class="room-count">{{ room.room_count_label }}</p>
+                  </div>
+                  <div class="room-status">
+                    <div class="signal-dots">
+                      {% for _ in range(room.signal_count) %}
+                        <span></span>
+                      {% endfor %}
+                    </div>
+                    <small class="{{ room.status_copy_class }}">{{ room.status_copy }}</small>
+                  </div>
+                </a>
+              {% else %}
+                <article class="room-card room-card-empty">
+                  <div class="room-preview room-preview-neutral"><span class="room-badge muted">Idle</span></div>
+                  <div class="room-copy">
+                    <div>
+                      <p class="room-name">Chua co phong thi</p>
+                      <small>He thong chua ghi nhan du lieu phong tu hau kiem.</small>
+                    </div>
+                    <p class="room-count">0 thi sinh</p>
+                  </div>
+                  <div class="room-status">
+                    <div class="signal-dots"><span></span></div>
+                    <small class="safe-copy">Chua co canh bao</small>
+                  </div>
+                </article>
+              {% endfor %}
             </div>
           </section>
 
@@ -234,9 +253,12 @@
                 </div>
               </div>
               <div class="metric-list">
-                <div class="metric-row"><span>Rời khung hình</span><strong>65%</strong></div>
-                <div class="metric-row"><span>Thêm người</span><strong>20%</strong></div>
-                <div class="metric-row"><span>Dùng điện thoại</span><strong>15%</strong></div>
+                {% for item in anomaly_type_metrics %}
+                  <div class="metric-row">
+                    <span>{{ item.label }}</span>
+                    <strong title="{{ item.count }} su co">{{ item.percentage_label }}</strong>
+                  </div>
+                {% endfor %}
               </div>
             </article>
 
@@ -244,25 +266,20 @@
               <div class="panel-header">
                 <div>
                   <p class="panel-title">System Processing Power</p>
-                  <p class="panel-subtitle">Độ ổn định của cụm AI proctoring hiện tại.</p>
+                  <p class="panel-subtitle">{{ performance_metrics.note }}</p>
                 </div>
                 <div class="latency-block">
-                  <strong>0.2s</strong>
+                  <strong>{{ performance_metrics.latency_seconds_label }}</strong>
                   <small>Average AI Latency</small>
                 </div>
               </div>
 
               <div class="power-bars" aria-hidden="true">
-                <span style="height: 38%"></span>
-                <span style="height: 54%"></span>
-                <span style="height: 78%"></span>
-                <span style="height: 88%"></span>
-                <span style="height: 96%"></span>
-                <span style="height: 74%"></span>
-                <span style="height: 58%"></span>
-                <span style="height: 65%"></span>
-                <span style="height: 47%"></span>
-                <span style="height: 34%"></span>
+                {% for bar in processing_power_bars %}
+                  <span title="{{ bar.tooltip }}" style="height: {{ bar.height }}%"></span>
+                {% else %}
+                  <span title="Chua co du lieu FPS thuc te" style="height: 12%"></span>
+                {% endfor %}
               </div>
             </article>
           </div>
@@ -461,6 +478,13 @@
         <section class="page-section" id="students">
           <div class="hero-row hero-row-tight">
             <div class="hero-copy">
+              <div id="students-room-toolbar" class="students-room-toolbar" hidden>
+                <button id="students-back-button" class="secondary-button students-back-button" type="button">
+                  <span class="material-symbols-outlined">arrow_back</span>
+                  Quay lại
+                </button>
+                <p id="students-room-indicator" class="micro-label"></p>
+              </div>
               <p class="section-tag">POST-EXAM AUDIT</p>
               <h2>Danh sách thí sinh và hồ sơ vi phạm hậu kiểm.</h2>
               <p class="section-description">Bảng này hiển thị lịch sử tích lũy theo từng thí sinh qua nhiều lần hậu kiểm để tra cứu lâu dài.</p>
@@ -687,5 +711,5 @@
   <script id="dashboard-data" type="application/json">{{ dashboard | tojson }}</script>
   <script id="review-data" type="application/json">{{ latest_review | tojson }}</script>
   <script id="review-history-data" type="application/json">{{ recent_results | tojson }}</script>
-  <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260416a"></script>
+  <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260502e"></script>
 {% endblock %}

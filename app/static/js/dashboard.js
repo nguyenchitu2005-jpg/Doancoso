@@ -51,9 +51,28 @@ const riskChips = document.querySelectorAll(".filter-chip");
 const exportStudentsCsvButton = document.getElementById("export-students-csv");
 const globalSearchInput = document.getElementById("global-search-input");
 const globalSearchSuggestions = document.getElementById("global-search-suggestions");
+const studentsRoomToolbar = document.getElementById("students-room-toolbar");
+const studentsBackButton = document.getElementById("students-back-button");
+const studentsRoomIndicator = document.getElementById("students-room-indicator");
+const roomFilterCards = document.querySelectorAll("[data-room-filter]");
 const allStudents = Array.isArray(dashboardPayload.students) ? dashboardPayload.students : [];
 let activeRiskFilter = "all";
 let activeSearchQuery = "";
+let activeRoomFilter = "";
+
+function normalizeCandidateId(value) {
+  const candidateId = String(value || "").trim();
+  if (!candidateId || candidateId.toUpperCase() === "UNKNOWN") {
+    return "";
+  }
+  return candidateId.toUpperCase();
+}
+
+function candidateIdsMatch(left, right) {
+  const normalizedLeft = normalizeCandidateId(left);
+  const normalizedRight = normalizeCandidateId(right);
+  return Boolean(normalizedLeft) && normalizedLeft === normalizedRight;
+}
 
 function normalizeTeacherReview(student) {
   const review = student && typeof student === "object" ? (student.teacher_review || {}) : {};
@@ -69,15 +88,15 @@ function getReviewedCandidateIds() {
   const candidateIds = new Set();
   if (Array.isArray(reviewPayload.students_report)) {
     reviewPayload.students_report.forEach((student) => {
-      const candidateId = String(student?.candidate_id || "").trim();
-      if (candidateId && candidateId !== "UNKNOWN") {
+      const candidateId = normalizeCandidateId(student?.candidate_id);
+      if (candidateId) {
         candidateIds.add(candidateId);
       }
     });
   }
   if (!candidateIds.size) {
-    const primaryCandidateId = String(reviewPayload.primary_candidate?.candidate_id || "").trim();
-    if (primaryCandidateId && primaryCandidateId !== "UNKNOWN") {
+    const primaryCandidateId = normalizeCandidateId(reviewPayload.primary_candidate?.candidate_id);
+    if (primaryCandidateId) {
       candidateIds.add(primaryCandidateId);
     }
   }
@@ -87,7 +106,7 @@ function getReviewedCandidateIds() {
 function syncStudentTeacherReview() {
   const reviewedCandidateIds = getReviewedCandidateIds();
   allStudents.forEach((student) => {
-    const candidateId = String(student?.candidate_id || "").trim();
+    const candidateId = normalizeCandidateId(student?.candidate_id);
     if (!reviewedCandidateIds.has(candidateId)) {
       return;
     }
@@ -270,9 +289,21 @@ function updateSearchSuggestions(query) {
   });
 }
 
+function roomMatchesEntry(entry, roomFilter) {
+  const normalizedRoomFilter = normalizeText(roomFilter);
+  if (!normalizedRoomFilter) {
+    return true;
+  }
+  return normalizeText(entry?.student?.room) === normalizedRoomFilter;
+}
+
 function getFilteredStudents() {
   return studentSearchIndex
-    .filter((entry) => (activeRiskFilter === "all" || entry.student.risk === activeRiskFilter) && searchMatchesEntry(entry, activeSearchQuery))
+    .filter((entry) => (
+      (activeRiskFilter === "all" || entry.student.risk === activeRiskFilter)
+      && roomMatchesEntry(entry, activeRoomFilter)
+      && searchMatchesEntry(entry, activeSearchQuery)
+    ))
     .map((entry) => entry.student);
 }
 
@@ -280,7 +311,7 @@ function behaviorChips(behaviors) {
   if (!Array.isArray(behaviors) || !behaviors.length) {
     return '<span class="table-chip">Không có</span>';
   }
-  return behaviors.map((behavior) => `<span class="table-chip">${behavior}</span>`).join("");
+  return behaviors.map((behavior) => `<span class="table-chip">${escapeHtml(behavior)}</span>`).join("");
 }
 
 function renderStudents() {
@@ -303,26 +334,38 @@ function renderStudents() {
 
   studentTableBody.innerHTML = rows.map((student) => {
     const teacherReview = normalizeTeacherReview(student);
+    const studentName = String(student.name || "Unknown Candidate");
+    const studentEmail = String(student.email || "");
+    const studentCandidateId = String(student.candidate_id || "");
+    const studentRoom = String(student.room || "");
+    const studentRisk = String(student.risk || "low");
+    const studentRiskLabel = riskLabels[studentRisk] || riskLabels.low;
     return `
     <tr>
       <td>
         <div class="candidate-cell">
-          <span class="table-avatar">${String(student.name || "NA").trim().split(/\s+/).slice(-1)[0].slice(0, 2).toUpperCase()}</span>
+          <span class="table-avatar">${studentName.trim().split(/\s+/).slice(-1)[0].slice(0, 2).toUpperCase()}</span>
           <div>
-            <strong>${student.name}</strong>
-            <small>${student.email}</small>
+            <a
+              class="student-review-link"
+              href="/?tab=review&review_candidate_id=${encodeURIComponent(studentCandidateId)}"
+              data-open-student-review="true"
+              data-candidate-id="${escapeHtml(studentCandidateId)}"
+              title="Mo hau kiem cua ${escapeHtml(studentName)}"
+            >${escapeHtml(studentName)}</a>
+            <small>${escapeHtml(studentEmail)}</small>
           </div>
         </div>
       </td>
       <td>
         <div class="cell-stack">
-          <strong>${student.candidate_id}</strong>
-          <small>${student.room}</small>
+          <strong>${escapeHtml(studentCandidateId)}</strong>
+          <small>${escapeHtml(studentRoom)}</small>
         </div>
       </td>
       <td><div class="table-chip-row">${behaviorChips(student.behaviors)}</div></td>
       <td><strong>${student.alerts}</strong></td>
-      <td><span class="risk-badge risk-${student.risk}">${riskLabels[student.risk]}</span></td>
+      <td><span class="risk-badge risk-${studentRisk}">${studentRiskLabel}</span></td>
       <td><span class="verdict-badge verdict-${teacherReview.status}">${teacherReview.label}</span></td>
     </tr>
   `;
@@ -340,35 +383,75 @@ function downloadStudentsReport() {
   window.location.href = "/students/export.xls";
 }
 
+function setStudentRiskFilter(nextRisk) {
+  activeRiskFilter = nextRisk || "all";
+  riskChips.forEach((chip) => {
+    chip.classList.toggle("is-selected", (chip.dataset.risk || "all") === activeRiskFilter);
+  });
+}
+
+function syncStudentsRoomToolbar() {
+  const hasRoomFilter = Boolean(activeRoomFilter);
+  if (studentsRoomToolbar) {
+    studentsRoomToolbar.hidden = !hasRoomFilter;
+  }
+  if (studentsRoomIndicator) {
+    studentsRoomIndicator.textContent = hasRoomFilter ? `Dang xem phong: ${activeRoomFilter}` : "";
+  }
+}
+
+function applyStudentSearch(query, { openStudentsTab = false, resetRiskFilter = false } = {}) {
+  activeSearchQuery = String(query || "").trim();
+  if (globalSearchInput) {
+    globalSearchInput.value = activeSearchQuery;
+  }
+  if (resetRiskFilter) {
+    setStudentRiskFilter("all");
+  }
+  updateSearchSuggestions(activeSearchQuery);
+  if (openStudentsTab) {
+    activateTab("students");
+  }
+  renderStudents();
+}
+
+function applyRoomFilter(roomName, { openStudentsTab = true } = {}) {
+  activeRoomFilter = String(roomName || "").trim();
+  syncStudentsRoomToolbar();
+  applyStudentSearch("", { openStudentsTab, resetRiskFilter: true });
+}
+
+function clearRoomFilterAndReturn() {
+  activeRoomFilter = "";
+  syncStudentsRoomToolbar();
+  applyStudentSearch("", { openStudentsTab: false, resetRiskFilter: true });
+
+  const nextUrl = new URL(window.location.href);
+  nextUrl.searchParams.delete("students_room");
+  nextUrl.searchParams.delete("review_candidate_id");
+  nextUrl.searchParams.set("tab", "overview");
+  window.history.replaceState({}, "", `${nextUrl.pathname}?${nextUrl.searchParams.toString()}`);
+  activateTab("overview");
+}
+
 riskChips.forEach((chip) => {
   chip.addEventListener("click", () => {
-    riskChips.forEach((item) => item.classList.remove("is-selected"));
-    chip.classList.add("is-selected");
-    activeRiskFilter = chip.dataset.risk || "all";
+    setStudentRiskFilter(chip.dataset.risk || "all");
     renderStudents();
   });
 });
 
 if (globalSearchInput) {
-  const applyGlobalSearch = (openStudentsTab = false) => {
-    activeSearchQuery = globalSearchInput.value || "";
-    updateSearchSuggestions(activeSearchQuery);
-    if (openStudentsTab) {
-      activateTab("students");
-    }
-    renderStudents();
-  };
-
   globalSearchInput.addEventListener("input", () => {
-    applyGlobalSearch(false);
+    applyStudentSearch(globalSearchInput.value || "", { openStudentsTab: false });
   });
 
   globalSearchInput.addEventListener("change", () => {
-    applyGlobalSearch(false);
+    applyStudentSearch(globalSearchInput.value || "", { openStudentsTab: false });
   });
 
   globalSearchInput.addEventListener("search", () => {
-    applyGlobalSearch(false);
+    applyStudentSearch(globalSearchInput.value || "", { openStudentsTab: false });
   });
 
   globalSearchInput.addEventListener("keydown", (event) => {
@@ -376,13 +459,47 @@ if (globalSearchInput) {
       return;
     }
     event.preventDefault();
-    applyGlobalSearch(true);
+    applyStudentSearch(globalSearchInput.value || "", { openStudentsTab: true });
   });
 }
 
 if (exportStudentsCsvButton) {
   exportStudentsCsvButton.addEventListener("click", downloadStudentsReport);
 }
+
+if (studentsBackButton) {
+  studentsBackButton.addEventListener("click", () => {
+    clearRoomFilterAndReturn();
+  });
+}
+
+if (studentTableBody) {
+  studentTableBody.addEventListener("click", (event) => {
+    const trigger = event.target.closest("[data-open-student-review]");
+    if (!trigger) {
+      return;
+    }
+    event.preventDefault();
+    const candidateId = String(trigger.dataset.candidateId || "");
+    const student = allStudents.find((item) => candidateIdsMatch(item?.candidate_id, candidateId));
+    if (!student) {
+      window.alert("Khong tim thay du lieu thi sinh de mo hau kiem.");
+      return;
+    }
+    openStudentReview(student);
+  });
+}
+
+roomFilterCards.forEach((card) => {
+  card.addEventListener("click", (event) => {
+    const roomName = String(card.dataset.roomFilter || "").trim();
+    if (!roomName) {
+      return;
+    }
+    event.preventDefault();
+    applyRoomFilter(roomName, { openStudentsTab: true });
+  });
+});
 
 const confidenceRange = document.getElementById("confidence-range");
 const confidenceValue = document.getElementById("confidence-value");
@@ -663,6 +780,9 @@ let liveModeStarting = false;
 let liveStream = null;
 let livePollTimer = null;
 let livePollInFlight = false;
+let selectedReviewCandidateId = "";
+let selectedReviewStudentContext = null;
+let reviewJumpHighlightTimer = null;
 
 function replaceReviewPayload(nextPayload) {
   Object.keys(reviewPayload).forEach((key) => {
@@ -687,13 +807,94 @@ function deriveReviewCandidate(payload) {
   };
 }
 
+function deriveReviewCandidateFromStudent(student, fallbackCandidate) {
+  const fallback = fallbackCandidate || deriveReviewCandidate(reviewPayload);
+  const studentName = String(student?.name || fallback.name || "Unknown Candidate");
+  const parts = studentName.split(/\s+/).filter(Boolean).slice(0, 2);
+  const riskValue = String(student?.risk || "").trim().toLowerCase();
+  return {
+    candidate_id: String(student?.candidate_id || fallback.candidate_id || "UNKNOWN"),
+    name: studentName,
+    email: String(student?.email || fallback.email || ""),
+    room: String(student?.room || fallback.room || ""),
+    alerts: Number(student?.alerts ?? fallback.alerts ?? 0),
+    risk_label: riskValue ? (riskLabels[riskValue] || String(student?.risk || "").toUpperCase()) : fallback.risk_label,
+    device_status: String(student?.device_status || fallback.device_status || "Dang cho phan tich"),
+    avatar: String(student?.avatar || parts.map((part) => part[0]).join("").toUpperCase() || fallback.avatar || "UC"),
+  };
+}
+
+function findStudentInReviewPayload(payload, candidateId) {
+  const targetCandidateId = normalizeCandidateId(candidateId);
+  if (!targetCandidateId) {
+    return null;
+  }
+  const students = Array.isArray(payload?.students_report) ? payload.students_report : [];
+  return students.find((student) => candidateIdsMatch(student?.candidate_id, targetCandidateId)) || null;
+}
+
+function reviewContainsCandidate(payload, candidateId) {
+  const targetCandidateId = normalizeCandidateId(candidateId);
+  if (!targetCandidateId) {
+    return false;
+  }
+  if (findStudentInReviewPayload(payload, targetCandidateId)) {
+    return true;
+  }
+  if (candidateIdsMatch(payload?.primary_candidate?.candidate_id, targetCandidateId)) {
+    return true;
+  }
+  const incidents = Array.isArray(payload?.incidents) ? payload.incidents : [];
+  return incidents.some((incident) => candidateIdsMatch(incident?.candidate_id, targetCandidateId));
+}
+
+function syncSelectedReviewCandidate(payload, options = {}) {
+  const requestedCandidateId = normalizeCandidateId(options?.candidateId);
+  if (requestedCandidateId && reviewContainsCandidate(payload, requestedCandidateId)) {
+    selectedReviewCandidateId = requestedCandidateId;
+    selectedReviewStudentContext = findStudentInReviewPayload(payload, requestedCandidateId) || { ...(options?.student || {}) };
+    return;
+  }
+  selectedReviewCandidateId = "";
+  selectedReviewStudentContext = null;
+}
+
+function getVisibleReviewIncidents(payload) {
+  const incidents = Array.isArray(payload?.incidents) ? payload.incidents : [];
+  if (!selectedReviewCandidateId) {
+    return incidents;
+  }
+  const filteredIncidents = incidents.filter((incident) => candidateIdsMatch(incident?.candidate_id, selectedReviewCandidateId));
+  return filteredIncidents.length ? filteredIncidents : incidents;
+}
+
+function getActiveReviewCandidate(payload) {
+  const defaultCandidate = deriveReviewCandidate(payload);
+  if (!selectedReviewCandidateId) {
+    return defaultCandidate;
+  }
+  const matchedStudent = findStudentInReviewPayload(payload, selectedReviewCandidateId);
+  if (matchedStudent) {
+    return deriveReviewCandidateFromStudent(matchedStudent, defaultCandidate);
+  }
+  if (selectedReviewStudentContext && candidateIdsMatch(selectedReviewStudentContext.candidate_id, selectedReviewCandidateId)) {
+    return deriveReviewCandidateFromStudent(selectedReviewStudentContext, defaultCandidate);
+  }
+  return defaultCandidate;
+}
+
 function getReviewRiskMessage(payload) {
+  const visibleIncidents = getVisibleReviewIncidents(payload);
+  if (selectedReviewCandidateId) {
+    return visibleIncidents.length > 0
+      ? `He thong da ghi nhan ${visibleIncidents.length} su co cho thi sinh nay trong lan hau kiem nay.`
+      : "Chua ghi nhan su co cho thi sinh nay trong lan hau kiem nay.";
+  }
   if (payload?.review_risk_message) {
     return String(payload.review_risk_message);
   }
-  const incidentCount = Array.isArray(payload?.incidents) ? payload.incidents.length : 0;
-  return incidentCount > 0
-    ? `He thong da ghi nhan ${incidentCount} su co trong lan hau kiem nay.`
+  return visibleIncidents.length > 0
+    ? `He thong da ghi nhan ${visibleIncidents.length} su co trong lan hau kiem nay.`
     : "Chua ghi nhan su co trong lan hau kiem nay.";
 }
 
@@ -765,7 +966,7 @@ function updateReviewDecisionButtons() {
 }
 
 function renderReviewCandidatePanel() {
-  const candidate = deriveReviewCandidate(reviewPayload);
+  const candidate = getActiveReviewCandidate(reviewPayload);
   if (reviewCandidateAvatar) {
     reviewCandidateAvatar.textContent = candidate.avatar;
   }
@@ -855,9 +1056,10 @@ function renderIncidentHistory(incidents, emptyText) {
 }
 
 function renderRecordedIncidentHistory() {
-  renderIncidentHistory(reviewPayload.incidents || [], "Chua co du lieu vi pham. Tai video de bat dau hau kiem.");
+  const visibleIncidents = getVisibleReviewIncidents(reviewPayload);
+  renderIncidentHistory(visibleIncidents, "Chua co du lieu vi pham. Tai video de bat dau hau kiem.");
   if (incidentCountChip) {
-    incidentCountChip.textContent = `${reviewPayload.incidents?.length || 0} su co`;
+    incidentCountChip.textContent = `${visibleIncidents.length || 0} su co`;
   }
   if (reviewPayload.video_url && reviewVideoPlayer && !reviewVideoPlayer.hidden) {
     setActiveIncident(reviewVideoPlayer.currentTime || 0);
@@ -881,10 +1083,11 @@ function renderReviewSessionSelection() {
   });
 }
 
-function applyRecordedReviewPayload(nextPayload) {
+function applyRecordedReviewPayload(nextPayload, options = {}) {
   if (liveStream || liveModeStarting) {
     stopLiveReviewMode({ restoreState: false });
   }
+  syncSelectedReviewCandidate(nextPayload, options);
   replaceReviewPayload(nextPayload);
   renderRecordedVideoStage();
   renderRecordedIncidentHistory();
@@ -894,6 +1097,71 @@ function applyRecordedReviewPayload(nextPayload) {
   renderReviewSessionSelection();
   syncStudentTeacherReview();
   renderStudents();
+}
+
+function focusTeacherReviewDecisionCard() {
+  if (!teacherReviewCard) {
+    return;
+  }
+  teacherReviewCard.scrollIntoView({ behavior: "smooth", block: "center" });
+  teacherReviewCard.classList.add("is-jump-highlight");
+  window.clearTimeout(reviewJumpHighlightTimer);
+  reviewJumpHighlightTimer = window.setTimeout(() => {
+    teacherReviewCard.classList.remove("is-jump-highlight");
+  }, 1800);
+}
+
+function upsertReviewHistoryEntry(payload) {
+  const selectedResultPath = String(payload?.result_path || "");
+  const selectedVideoPath = String(payload?.video_path || "");
+  const existingIndex = reviewHistory.findIndex((entry) => {
+    const sameResult = selectedResultPath && String(entry?.result_path || "") === selectedResultPath;
+    const sameVideo = !selectedResultPath && selectedVideoPath && String(entry?.video_path || "") === selectedVideoPath;
+    return sameResult || sameVideo;
+  });
+  if (existingIndex >= 0) {
+    reviewHistory[existingIndex] = payload;
+    return;
+  }
+  reviewHistory.unshift(payload);
+}
+
+async function openStudentReview(student) {
+  const candidateId = normalizeCandidateId(student?.candidate_id);
+  if (!candidateId) {
+    window.alert("Khong tim thay ma thi sinh hop le de mo hau kiem.");
+    return;
+  }
+
+  activateTab("review");
+
+  let targetPayload = reviewContainsCandidate(reviewPayload, candidateId) ? { ...reviewPayload } : null;
+  if (!targetPayload) {
+    targetPayload = reviewHistory.find((entry) => reviewContainsCandidate(entry, candidateId)) || null;
+  }
+
+  if (!targetPayload) {
+    showTeacherReviewFeedback("Dang mo lan hau kiem cua thi sinh...");
+    try {
+      const response = await fetch(`/review/candidate/${encodeURIComponent(candidateId)}`);
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.message || "Khong tim thay lan hau kiem phu hop.");
+      }
+      targetPayload = payload.review || null;
+      if (!targetPayload) {
+        throw new Error("Khong nhan duoc du lieu hau kiem hop le.");
+      }
+      upsertReviewHistoryEntry(targetPayload);
+    } catch (error) {
+      showTeacherReviewFeedback(error.message || "Khong tim thay lan hau kiem phu hop.", true);
+      return;
+    }
+  }
+
+  applyRecordedReviewPayload(targetPayload, { candidateId, student });
+  showTeacherReviewFeedback(`Da mo lan hau kiem gan nhat cua ${String(student?.name || "thi sinh")}.`);
+  focusTeacherReviewDecisionCard();
 }
 
 function setActiveIncident(currentTime) {
@@ -1143,6 +1411,11 @@ async function ensureLiveReviewMode() {
 activateTab(appShell?.dataset.initialTab || "overview");
 syncStudentTeacherReview();
 renderStudents();
+syncStudentsRoomToolbar();
+const initialStudentsRoom = new URLSearchParams(window.location.search).get("students_room");
+if (initialStudentsRoom) {
+  applyRoomFilter(initialStudentsRoom, { openStudentsTab: true });
+}
 initializeReviewTimeline();
 syncSelectedFileState();
 renderTeacherReview();

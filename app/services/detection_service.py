@@ -367,9 +367,23 @@ class DetectionService:
         self,
         incidents: list[dict[str, Any]],
         frame_identity_counter: Counter[str],
+        recognized_profiles: dict[str, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         # Tong hop incident thanh bang thí sinh de dung cho tab Students va card tong quan.
         student_map: dict[str, dict[str, Any]] = {}
+
+        for candidate_id, profile in (recognized_profiles or {}).items():
+            normalized_candidate_id = str(candidate_id or "UNKNOWN")
+            student_map[normalized_candidate_id] = {
+                "name": str(profile.get("name") or "Unknown Candidate"),
+                "email": str(profile.get("email") or ""),
+                "candidate_id": normalized_candidate_id,
+                "room": str(profile.get("room") or ""),
+                "behaviors": [],
+                "alerts": 0,
+                "risk": "low",
+                "_risk_marks": [],
+            }
 
         for incident in incidents:
             candidate_id = str(incident.get("candidate_id") or "UNKNOWN")
@@ -856,6 +870,49 @@ class DetectionService:
                 data["video_name"] = Path(video_path).name
             results.append(data)
         return results
+
+    def get_latest_result_payload_for_candidate(self, candidate_id: str) -> dict[str, Any] | None:
+        normalized_candidate_id = str(candidate_id or "").strip().upper()
+        if not normalized_candidate_id:
+            return None
+
+        for file_path in self._iter_result_files():
+            try:
+                data = json.loads(file_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+
+            students = data.get("students_report") or data.get("summary", {}).get("students_report") or []
+            primary_candidate = data.get("primary_candidate") or data.get("summary", {}).get("primary_candidate") or {}
+            incidents = data.get("incidents") or []
+
+            student_match = any(
+                isinstance(item, dict)
+                and str(item.get("candidate_id") or "").strip().upper() == normalized_candidate_id
+                for item in students
+            )
+            primary_match = (
+                isinstance(primary_candidate, dict)
+                and str(primary_candidate.get("candidate_id") or "").strip().upper() == normalized_candidate_id
+            )
+            incident_match = any(
+                isinstance(item, dict)
+                and str(item.get("candidate_id") or "").strip().upper() == normalized_candidate_id
+                for item in incidents
+            )
+
+            if not any([student_match, primary_match, incident_match]):
+                continue
+
+            data["teacher_review"] = self._teacher_review_payload(**(data.get("teacher_review", {}) or {}))
+            data["result_filename"] = file_path.name
+            data["result_path"] = str(file_path)
+            video_path = str(data.get("video_path") or "")
+            if video_path:
+                data["video_name"] = Path(video_path).name
+            return data
+
+        return None
 
     def list_historical_students(self, limit_files: int | None = None) -> list[dict[str, Any]]:
         def risk_rank(risk: str | None) -> int:
@@ -1560,6 +1617,7 @@ class DetectionService:
         signal_active_since: dict[str, float] = {}
         signal_duration_triggered: dict[str, bool] = {}
         frame_identity_counter: Counter[str] = Counter()
+        recognized_profiles: dict[str, dict[str, Any]] = {}
         cached_mediapipe_payload: dict[str, Any] | None = None
         cached_face_identity: dict[str, Any] | None = None
         cached_face_identity_age = self.face_identity_ttl_samples + 1
@@ -1689,7 +1747,14 @@ class DetectionService:
                             cached_face_identity = dict(frame_identity)
                             cached_face_identity_age = 0
                             incident_identity = cached_face_identity
-                            frame_identity_counter[self._identity_key(frame_identity)] += 1
+                            candidate_id = self._identity_key(frame_identity)
+                            frame_identity_counter[candidate_id] += 1
+                            recognized_profiles[candidate_id] = {
+                                "candidate_id": candidate_id,
+                                "name": str(frame_identity.get("name") or candidate_id),
+                                "email": str(frame_identity.get("email") or ""),
+                                "room": str(frame_identity.get("room") or ""),
+                            }
                         else:
                             cached_face_identity_age += 1
                             incident_identity = self._get_cached_identity(
@@ -2094,6 +2159,7 @@ class DetectionService:
         students_report = self._build_students_report(
             incidents=incidents,
             frame_identity_counter=frame_identity_counter,
+            recognized_profiles=recognized_profiles,
         )
         primary_candidate = self._pick_primary_candidate(students_report)
 

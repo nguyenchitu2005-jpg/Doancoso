@@ -6,5 +6,5 @@
   "enable_gaze_alerts": true,
   "enable_cell_phone_alerts": true,
   "enable_face_missing_alerts": false,
-  "enable_multiple_people_alerts": false
+  "enable_multiple_people_alerts": true
 }

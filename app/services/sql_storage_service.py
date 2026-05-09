@@ -726,6 +726,43 @@ class SQLStorageService:
         except (SQLAlchemyError, RuntimeError):
             return None
 
+    def get_latest_review_result_for_candidate(self, candidate_id: str) -> dict[str, Any] | None:
+        # Phuc vu luong mo lan hau kiem moi nhat khi click vao mot thi sinh tren dashboard.
+        if not self.is_available() or select is None or ReviewResult is None:
+            return None
+
+        normalized_candidate_id = self._normalize_candidate_id(candidate_id)
+        if not normalized_candidate_id:
+            return None
+
+        try:
+            with db_session_manager.session_scope() as session:
+                review = None
+
+                if CandidateHistory is not None:
+                    history = session.scalar(
+                        select(CandidateHistory).where(CandidateHistory.candidate_id == normalized_candidate_id)
+                    )
+                    if history is not None and history.last_review_id is not None:
+                        review = session.scalar(
+                            select(ReviewResult).where(ReviewResult.id == int(history.last_review_id))
+                        )
+
+                if review is None and ReviewIncident is not None:
+                    review = session.scalar(
+                        select(ReviewResult)
+                        .join(ReviewIncident, ReviewIncident.review_id == ReviewResult.id)
+                        .where(ReviewIncident.candidate_id == normalized_candidate_id)
+                        .order_by(ReviewResult.created_at.desc(), ReviewResult.id.desc())
+                        .limit(1)
+                    )
+
+                if review is None:
+                    return None
+                return self._review_to_payload(session, review)
+        except (SQLAlchemyError, RuntimeError, ValueError, TypeError):
+            return None
+
     def update_review_decision(
         self,
         *,
