@@ -6,7 +6,7 @@ from io import StringIO
 from pathlib import Path
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, File, Request, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from fastapi.templating import Jinja2Templates
@@ -22,6 +22,7 @@ except ImportError:  # pragma: no cover
     np = None
 
 from app.services.dashboard_service import get_dashboard_payload
+from app.services.candidate_registry_service import candidate_registry_service
 from app.services.detection_service import DetectionService
 from app.services.settings_service import DEFAULT_AI_SETTINGS, get_ai_settings, settings_service
 from app.services.sql_storage_service import sql_storage_service
@@ -33,6 +34,13 @@ templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / 
 video_service = VideoService()
 detection_service = DetectionService()
 VALID_TABS = {"overview", "review", "students", "settings"}
+DEFAULT_TAB = "settings"
+PAGE_TITLES = {
+    "overview": "System Oversight",
+    "review": "Chi tiết Hậu Kiểm",
+    "students": "Danh sách Thí sinh & Vi phạm",
+    "settings": "Cấu hình Hệ thống AI",
+}
 VIETNAM_TZ = timezone(timedelta(hours=7))
 
 
@@ -197,6 +205,123 @@ def _merge_students_for_dashboard(latest_students: list[dict], historical_studen
     return merged
 
 
+def _candidate_profile_key(value: object) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _candidate_profiles_by_id(candidates: list[dict]) -> dict[str, dict]:
+    profiles: dict[str, dict] = {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        key = _candidate_profile_key(candidate.get("candidate_id"))
+        if key:
+            profiles[key] = candidate
+    return profiles
+
+
+def _apply_candidate_profile_to_student(student: dict, profiles_by_id: dict[str, dict]) -> dict:
+    row = dict(student)
+    profile = profiles_by_id.get(_candidate_profile_key(row.get("candidate_id")))
+    if profile is None:
+        return row
+
+    candidate_id = str(profile.get("candidate_id") or row.get("candidate_id") or "").strip()
+    row["candidate_id"] = candidate_id
+    row["name"] = str(profile.get("name") or row.get("name") or candidate_id).strip()
+    row["email"] = str(profile.get("email") or "").strip()
+    row["room"] = str(profile.get("room") or "").strip()
+    return row
+
+
+def _apply_candidate_profiles_to_students(students: list[dict], candidates: list[dict]) -> list[dict]:
+    profiles_by_id = _candidate_profiles_by_id(candidates)
+    if not profiles_by_id:
+        return [dict(student) for student in students]
+    return [_apply_candidate_profile_to_student(student, profiles_by_id) for student in students]
+
+
+def _avatar_from_candidate_name(name: object, fallback: str = "UC") -> str:
+    parts = [part[0] for part in str(name or "").split() if part]
+    return "".join(parts[:2]).upper() or fallback
+
+
+def _apply_candidate_profile_to_candidate_payload(candidate: dict | None, profiles_by_id: dict[str, dict]) -> dict | None:
+    if not isinstance(candidate, dict):
+        return candidate
+
+    row = dict(candidate)
+    profile = profiles_by_id.get(_candidate_profile_key(row.get("candidate_id")))
+    if profile is None:
+        return row
+
+    candidate_id = str(profile.get("candidate_id") or row.get("candidate_id") or "").strip()
+    row["candidate_id"] = candidate_id
+    row["name"] = str(profile.get("name") or row.get("name") or candidate_id).strip()
+    row["email"] = str(profile.get("email") or "").strip()
+    row["room"] = str(profile.get("room") or "").strip()
+    if "avatar" in row:
+        row["avatar"] = _avatar_from_candidate_name(row.get("name"), fallback=str(row.get("avatar") or "UC"))
+    return row
+
+
+def _apply_candidate_profile_to_incident(incident: dict, profiles_by_id: dict[str, dict]) -> dict:
+    row = dict(incident)
+    profile = profiles_by_id.get(_candidate_profile_key(row.get("candidate_id")))
+    if profile is None:
+        return row
+
+    candidate_id = str(profile.get("candidate_id") or row.get("candidate_id") or "").strip()
+    row["candidate_id"] = candidate_id
+    row["candidate_name"] = str(profile.get("name") or row.get("candidate_name") or candidate_id).strip()
+    row["candidate_email"] = str(profile.get("email") or "").strip()
+    row["candidate_room"] = str(profile.get("room") or "").strip()
+    return row
+
+
+def _apply_candidate_profiles_to_review(review: dict, candidates: list[dict]) -> dict:
+    profiles_by_id = _candidate_profiles_by_id(candidates)
+    if not profiles_by_id:
+        return dict(review)
+
+    row = dict(review)
+    summary = dict(row.get("summary") or {})
+    students = row.get("students_report") or summary.get("students_report") or []
+    if isinstance(students, list):
+        students = _apply_candidate_profiles_to_students(students, candidates)
+        row["students_report"] = students
+        summary["students_report"] = students
+
+    primary_candidate = _apply_candidate_profile_to_candidate_payload(
+        row.get("primary_candidate") or summary.get("primary_candidate"),
+        profiles_by_id,
+    )
+    row["primary_candidate"] = primary_candidate
+    summary["primary_candidate"] = primary_candidate
+    row["summary"] = summary
+
+    incidents = row.get("incidents") or []
+    if isinstance(incidents, list):
+        row["incidents"] = [
+            _apply_candidate_profile_to_incident(incident, profiles_by_id)
+            for incident in incidents
+            if isinstance(incident, dict)
+        ]
+
+    review_candidate = _apply_candidate_profile_to_candidate_payload(row.get("review_candidate"), profiles_by_id)
+    if isinstance(review_candidate, dict):
+        review_candidate["avatar"] = _avatar_from_candidate_name(
+            review_candidate.get("name"),
+            fallback=str(review_candidate.get("avatar") or "UC"),
+        )
+        row["review_candidate"] = review_candidate
+    return row
+
+
+def _apply_candidate_profiles_to_reviews(reviews: list[dict], candidates: list[dict]) -> list[dict]:
+    return [_apply_candidate_profiles_to_review(review, candidates) for review in reviews]
+
+
 def _room_sort_key(room_name: str) -> tuple[int, str]:
     normalized = str(room_name or "").strip()
     if not normalized:
@@ -334,17 +459,7 @@ def _teacher_verdict_label_for_export(student: dict) -> str:
 
 
 def _format_csv_datetime(raw_value: str | None) -> str:
-    raw_text = str(raw_value or "").strip()
-    if not raw_text:
-        return ""
-    try:
-        normalized = raw_text.replace("Z", "+00:00")
-        parsed = datetime.fromisoformat(normalized)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(VIETNAM_TZ).strftime("%d/%m/%Y %H:%M:%S")
-    except ValueError:
-        return raw_text
+    return _format_vietnam_datetime(raw_value, empty_label="")
 
 
 def _review_device_status(latest_review: dict) -> str:
@@ -373,6 +488,18 @@ def _parse_iso_datetime(raw_value: str | None) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _format_vietnam_datetime(raw_value: str | None, empty_label: str = "Chua co moc xu ly.") -> str:
+    raw_text = str(raw_value or "").strip()
+    if not raw_text:
+        return empty_label
+
+    parsed = _parse_iso_datetime(raw_text)
+    if parsed is None:
+        return raw_text
+
+    return parsed.astimezone(VIETNAM_TZ).strftime("%d/%m/%Y %H:%M:%S")
 
 
 def _coerce_float(raw_value) -> float | None:
@@ -642,12 +769,7 @@ def build_system_status(latest_review: dict, performance_metrics: dict[str, str]
     created_at = latest_review.get("created_at")
     updated_label = "Chưa có mốc xử lý."
     if created_at:
-        try:
-            normalized = str(created_at).replace("Z", "+00:00")
-            updated_at = datetime.fromisoformat(normalized)
-            updated_label = f"Cập nhật: {updated_at.strftime('%d/%m/%Y %H:%M:%S')}"
-        except ValueError:
-            updated_label = f"Cập nhật: {created_at}"
+        updated_label = f"Cập nhật: {_format_vietnam_datetime(created_at)}"
 
     return {
         "latency_label": performance_metrics.get("latency_label", "--"),
@@ -685,13 +807,7 @@ def _empty_review_payload() -> dict[str, object]:
     }
 
 def _format_review_created_at_label(created_at: str | None) -> str:
-    if not created_at:
-        return "Chua co moc xu ly."
-    try:
-        normalized = str(created_at).replace("Z", "+00:00")
-        return datetime.fromisoformat(normalized).strftime("%d/%m/%Y %H:%M:%S")
-    except ValueError:
-        return str(created_at)
+    return _format_vietnam_datetime(created_at)
 
 
 def _hydrate_review_payload(source: dict | None = None) -> dict:
@@ -784,9 +900,9 @@ def build_latest_review_payload(recent_uploads: list[dict], recent_reviews: list
 
 
 def build_dashboard_context(request: Request) -> dict:
-    selected_tab = request.query_params.get("tab", "overview")
+    selected_tab = request.query_params.get("tab", DEFAULT_TAB)
     if selected_tab not in VALID_TABS:
-        selected_tab = "overview"
+        selected_tab = DEFAULT_TAB
     review_candidate_id = str(request.query_params.get("review_candidate_id") or "").strip()
 
     upload_status = request.query_params.get("upload_status")
@@ -801,9 +917,30 @@ def build_dashboard_context(request: Request) -> dict:
     if detection_status and detection_message:
         detection_feedback = {"status": detection_status, "message": detection_message}
 
+    candidate_status = request.query_params.get("candidate_status")
+    candidate_message = request.query_params.get("candidate_message")
+    candidate_feedback = None
+    if candidate_status and candidate_message:
+        candidate_feedback = {"status": candidate_status, "message": candidate_message}
+
+    try:
+        face_candidates = candidate_registry_service.list_candidates()
+    except ValueError as exc:
+        face_candidates = []
+        candidate_feedback = {
+            "status": "error",
+            "message": str(exc),
+        }
+
     recent_uploads = video_service.list_uploads()
-    recent_results = build_recent_review_payloads(recent_uploads, limit=8)
-    analytics_reviews = build_recent_review_payloads(recent_uploads, limit=50)
+    recent_results = _apply_candidate_profiles_to_reviews(
+        build_recent_review_payloads(recent_uploads, limit=8),
+        face_candidates,
+    )
+    analytics_reviews = _apply_candidate_profiles_to_reviews(
+        build_recent_review_payloads(recent_uploads, limit=50),
+        face_candidates,
+    )
     latest_review = build_latest_review_payload(recent_uploads, recent_results)
     if review_candidate_id:
         matching_review = next(
@@ -830,7 +967,10 @@ def build_dashboard_context(request: Request) -> dict:
             if raw_review is None:
                 raw_review = detection_service.get_latest_result_payload_for_candidate(review_candidate_id)
             if raw_review is not None:
-                matching_review = _hydrate_review_payload(raw_review)
+                matching_review = _apply_candidate_profiles_to_review(
+                    _hydrate_review_payload(raw_review),
+                    face_candidates,
+                )
                 if not any(
                     (
                         str(item.get("result_path") or "").strip() == str(matching_review.get("result_path") or "").strip()
@@ -841,7 +981,9 @@ def build_dashboard_context(request: Request) -> dict:
                     recent_results.insert(0, matching_review)
         if matching_review is not None:
             latest_review = dict(matching_review)
+    latest_review = _apply_candidate_profiles_to_review(latest_review, face_candidates)
     ai_settings = get_ai_settings()
+
     historical_students = sql_storage_service.list_candidate_histories(limit=250)
     if not historical_students:
         historical_students = detection_service.list_historical_students()
@@ -853,6 +995,7 @@ def build_dashboard_context(request: Request) -> dict:
         dashboard_payload["overview"]["active_sessions"] = len(latest_students_report)
         dashboard_payload["overview"]["integrity_score"] = f"{max(0.0, 100.0 - (high_risk * 8.0)):.1f}%"
     source_students = _merge_students_for_dashboard(latest_students_report, historical_students)
+    source_students = _apply_candidate_profiles_to_students(source_students, face_candidates)
     dashboard_payload["students"] = [dict(student) for student in source_students]
     student_items = dashboard_payload.get("students", [])
     room_cards = _build_room_cards(student_items if isinstance(student_items, list) else [])
@@ -871,15 +1014,15 @@ def build_dashboard_context(request: Request) -> dict:
         trend_timestamps=recent_incident_timestamps,
     )
     system_status = build_system_status(latest_review, performance_metrics)
-
     context = {
         "request": request,
         "app_title": "Vigilant Curator",
-        "page_title": "System Oversight",
+        "page_title": PAGE_TITLES.get(selected_tab, PAGE_TITLES[DEFAULT_TAB]),
         "dashboard": dashboard_payload,
         "selected_tab": selected_tab,
         "upload_feedback": upload_feedback,
         "detection_feedback": detection_feedback,
+        "candidate_feedback": candidate_feedback,
         "recent_uploads": recent_uploads,
         "recent_results": recent_results,
         "latest_review": latest_review,
@@ -894,6 +1037,7 @@ def build_dashboard_context(request: Request) -> dict:
         "system_status": system_status,
         "performance_metrics": performance_metrics,
         "ai_settings": ai_settings,
+        "face_candidates": face_candidates,
     }
     return context
 
@@ -1198,6 +1342,79 @@ async def reset_settings() -> JSONResponse:
             "defaults": DEFAULT_AI_SETTINGS,
         }
     )
+
+
+@router.post("/settings/candidates", tags=["web"])
+async def save_face_candidate(
+    candidate_id: str = Form(...),
+    candidate_name: str = Form(...),
+    candidate_email: str = Form(""),
+    candidate_room: str = Form(""),
+    candidate_image: UploadFile | None = File(None),
+) -> RedirectResponse:
+    try:
+        profile = await candidate_registry_service.save_candidate(
+            candidate_id=candidate_id,
+            name=candidate_name,
+            email=candidate_email,
+            room=candidate_room,
+            image_file=candidate_image,
+        )
+        sql_storage_service.update_candidate_profile(profile)
+        face_status = detection_service.reload_face_recognition_gallery()
+        stored_candidate_id = str(profile.get("candidate_id") or "")
+        candidate_name_label = str(profile.get("name") or stored_candidate_id)
+        if detection_service.has_face_candidate(stored_candidate_id):
+            action = "cap nhat" if profile.get("updated") else "them"
+            status = "success"
+            message = f"Da {action} thi sinh {candidate_name_label} vao face gallery."
+        else:
+            status = "warning"
+            message = (
+                f"Da luu ho so {candidate_name_label}, nhung InsightFace chua doc duoc khuon mat trong anh. "
+                "Hay thu anh ro mat hon."
+            )
+        if face_status.get("message") and status != "success":
+            message = f"{message} ({face_status['message']})"
+    except ValueError as exc:
+        status = "error"
+        message = str(exc)
+    except OSError as exc:
+        status = "error"
+        message = f"Khong the luu anh thi sinh: {exc}"
+
+    query = urlencode(
+        {
+            "tab": "settings",
+            "candidate_status": status,
+            "candidate_message": message,
+        }
+    )
+    return RedirectResponse(url=f"/?{query}", status_code=303)
+
+
+@router.post("/settings/candidates/delete", tags=["web"])
+async def delete_face_candidate(candidate_id: str = Form(...)) -> RedirectResponse:
+    try:
+        profile = candidate_registry_service.delete_candidate(candidate_id)
+        detection_service.reload_face_recognition_gallery()
+        status = "success"
+        message = f"Da xoa thi sinh {profile['name']} khoi face gallery."
+    except ValueError as exc:
+        status = "error"
+        message = str(exc)
+    except OSError as exc:
+        status = "error"
+        message = f"Khong the xoa thi sinh: {exc}"
+
+    query = urlencode(
+        {
+            "tab": "settings",
+            "candidate_status": status,
+            "candidate_message": message,
+        }
+    )
+    return RedirectResponse(url=f"/?{query}", status_code=303)
 
 
 @router.post("/review/decision", tags=["web"])

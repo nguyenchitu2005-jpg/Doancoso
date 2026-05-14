@@ -683,9 +683,27 @@ if (resetSettingsButton) {
 
 const uploadTriggers = document.querySelectorAll(".upload-trigger");
 const uploadFileInput = document.getElementById("review-video-file");
+const uploadDropzone = document.querySelector(".upload-dropzone");
 const selectedFileName = document.getElementById("selected-file-name");
 const clearSelectedFileButton = document.getElementById("clear-selected-file");
 const uploadSubmitButton = document.getElementById("upload-submit-button");
+const candidateImageInput = document.getElementById("candidate-image-file");
+const candidateImageName = document.getElementById("candidate-image-name");
+const candidateSubmitButton = document.getElementById("candidate-submit-button");
+const candidateClearButton = document.getElementById("candidate-clear-button");
+const candidateDeleteButton = document.getElementById("candidate-delete-button");
+const candidateDeleteForm = document.getElementById("candidate-delete-form");
+const candidateDeleteIdInput = document.getElementById("candidate-delete-id-input");
+const candidateIdInput = document.getElementById("candidate-id-input");
+const candidateNameInput = document.getElementById("candidate-name-input");
+const candidateEmailInput = document.getElementById("candidate-email-input");
+const candidateRoomInput = document.getElementById("candidate-room-input");
+const candidateRegistryItems = document.querySelectorAll(".candidate-registry-item[data-candidate-id]");
+let selectedFaceCandidateId = "";
+let selectedFaceCandidateImage = "";
+let selectedReviewVideoFiles = [];
+
+const acceptedReviewVideoExtensions = new Set(["mp4", "avi", "mov", "mkv"]);
 
 uploadTriggers.forEach((trigger) => {
   trigger.addEventListener("click", () => {
@@ -702,7 +720,9 @@ function syncSelectedFileState() {
     return;
   }
 
-  const files = Array.from(uploadFileInput.files || []);
+  const files = selectedReviewVideoFiles.length
+    ? selectedReviewVideoFiles
+    : Array.from(uploadFileInput.files || []);
   const fileCount = files.length;
   const hasFile = fileCount > 0;
 
@@ -729,15 +749,161 @@ function syncSelectedFileState() {
   }
 }
 
+function getReviewVideoKey(file) {
+  return [file.name, file.size, file.lastModified].join("|");
+}
+
+function isAcceptedReviewVideo(file) {
+  const extension = String(file.name || "").split(".").pop().toLowerCase();
+  return acceptedReviewVideoExtensions.has(extension);
+}
+
+function writeReviewVideoFilesToInput() {
+  if (!uploadFileInput || typeof DataTransfer === "undefined") {
+    return;
+  }
+
+  const transfer = new DataTransfer();
+  selectedReviewVideoFiles.forEach((file) => {
+    transfer.items.add(file);
+  });
+  uploadFileInput.files = transfer.files;
+}
+
+function addReviewVideoFiles(files) {
+  const existingFiles = new Map(selectedReviewVideoFiles.map((file) => [getReviewVideoKey(file), file]));
+
+  Array.from(files || []).forEach((file) => {
+    if (!isAcceptedReviewVideo(file)) {
+      return;
+    }
+
+    existingFiles.set(getReviewVideoKey(file), file);
+  });
+
+  selectedReviewVideoFiles = Array.from(existingFiles.values());
+  writeReviewVideoFilesToInput();
+  syncSelectedFileState();
+}
+
 if (uploadFileInput && selectedFileName) {
-  uploadFileInput.addEventListener("change", syncSelectedFileState);
+  uploadFileInput.addEventListener("change", () => {
+    addReviewVideoFiles(uploadFileInput.files);
+  });
 }
 
 if (clearSelectedFileButton && uploadFileInput) {
   clearSelectedFileButton.addEventListener("click", () => {
+    selectedReviewVideoFiles = [];
     uploadFileInput.value = "";
     syncSelectedFileState();
-    uploadFileInput.click();
+  });
+}
+
+if (uploadDropzone) {
+  uploadDropzone.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    uploadDropzone.classList.add("is-drag-over");
+  });
+
+  uploadDropzone.addEventListener("dragleave", () => {
+    uploadDropzone.classList.remove("is-drag-over");
+  });
+
+  uploadDropzone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    uploadDropzone.classList.remove("is-drag-over");
+    addReviewVideoFiles(event.dataTransfer?.files || []);
+  });
+}
+
+function syncCandidateImageState() {
+  if (!candidateImageInput || !candidateImageName) {
+    return;
+  }
+  const file = candidateImageInput.files?.[0] || null;
+  if (file) {
+    candidateImageName.textContent = `Da chon anh moi: ${file.name}`;
+  } else if (selectedFaceCandidateImage) {
+    candidateImageName.textContent = `Dang dung anh hien tai: ${selectedFaceCandidateImage}`;
+  } else {
+    candidateImageName.textContent = "Chua chon anh nao";
+  }
+  if (candidateSubmitButton) {
+    candidateSubmitButton.disabled = !file && !selectedFaceCandidateId;
+  }
+}
+
+if (candidateImageInput) {
+  candidateImageInput.addEventListener("change", syncCandidateImageState);
+  syncCandidateImageState();
+}
+
+function setCandidateFormMode(candidate) {
+  selectedFaceCandidateId = candidate?.candidateId || "";
+  selectedFaceCandidateImage = candidate?.image || "";
+  if (candidateIdInput) {
+    candidateIdInput.value = candidate?.candidateId || "";
+  }
+  if (candidateNameInput) {
+    candidateNameInput.value = candidate?.name || "";
+  }
+  if (candidateEmailInput) {
+    candidateEmailInput.value = candidate?.email || "";
+  }
+  if (candidateRoomInput) {
+    candidateRoomInput.value = candidate?.room || "";
+  }
+  if (candidateImageInput) {
+    candidateImageInput.value = "";
+  }
+  if (candidateSubmitButton) {
+    candidateSubmitButton.textContent = selectedFaceCandidateId ? "Cập nhật thí sinh" : "Thêm thí sinh";
+  }
+  if (candidateClearButton) {
+    candidateClearButton.hidden = !selectedFaceCandidateId;
+  }
+  if (candidateDeleteButton) {
+    candidateDeleteButton.hidden = !selectedFaceCandidateId;
+  }
+  if (candidateDeleteIdInput) {
+    candidateDeleteIdInput.value = selectedFaceCandidateId;
+  }
+  candidateRegistryItems.forEach((item) => {
+    item.classList.toggle("is-selected", item.dataset.candidateId === selectedFaceCandidateId);
+  });
+  syncCandidateImageState();
+}
+
+candidateRegistryItems.forEach((item) => {
+  item.addEventListener("click", () => {
+    setCandidateFormMode({
+      candidateId: item.dataset.candidateId || "",
+      name: item.dataset.candidateName || "",
+      email: item.dataset.candidateEmail || "",
+      room: item.dataset.candidateRoom || "",
+      image: item.dataset.candidateImage || "",
+    });
+  });
+});
+
+if (candidateClearButton) {
+  candidateClearButton.addEventListener("click", () => {
+    setCandidateFormMode(null);
+  });
+}
+
+if (candidateDeleteButton && candidateDeleteForm) {
+  candidateDeleteButton.addEventListener("click", () => {
+    if (!selectedFaceCandidateId) {
+      return;
+    }
+    const candidateName = candidateNameInput?.value || selectedFaceCandidateId;
+    const confirmed = window.confirm(`Xoa thi sinh ${candidateName}? Hanh dong nay se xoa ca anh mau.`);
+    if (!confirmed) {
+      return;
+    }
+    candidateDeleteForm.submit();
   });
 }
 

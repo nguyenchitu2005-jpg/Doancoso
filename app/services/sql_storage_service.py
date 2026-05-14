@@ -358,6 +358,30 @@ class SQLStorageService:
         except (SQLAlchemyError, RuntimeError):
             return None
 
+    def update_candidate_profile(self, profile: dict[str, Any]) -> bool:
+        # Dong bo ten/email/phong hien tai tu face registry vao bang lich su tong hop.
+        if not self.is_available() or select is None or CandidateHistory is None:
+            return False
+
+        candidate_id = self._normalize_candidate_id(profile.get("candidate_id"))
+        if not candidate_id:
+            return False
+
+        try:
+            with db_session_manager.session_scope() as session:
+                history = session.scalar(
+                    select(CandidateHistory).where(CandidateHistory.candidate_id == candidate_id)
+                )
+                if history is None:
+                    return False
+
+                history.name = str(profile.get("name") or history.name or candidate_id)
+                history.email = str(profile.get("email") or "")
+                history.room = str(profile.get("room") or "")
+                return True
+        except (SQLAlchemyError, RuntimeError):
+            return False
+
     def _resolve_upload_id(self, session, upload_info: dict[str, Any] | None, video_path: str) -> int | None:
         # Tim upload_id de lien ket review voi uploaded_videos neu co the.
         if select is None or UploadedVideo is None:

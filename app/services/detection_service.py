@@ -207,6 +207,16 @@ class DetectionService:
             return {"enabled": False, "message": "Face recognition bi tat trong cau hinh."}
         return self.face_recognition_service.get_status()
 
+    def reload_face_recognition_gallery(self) -> dict[str, Any]:
+        if self.face_recognition_service is None:
+            return {"enabled": False, "message": "Face recognition bi tat trong cau hinh."}
+        return self.face_recognition_service.reload_gallery()
+
+    def has_face_candidate(self, candidate_id: str) -> bool:
+        if self.face_recognition_service is None:
+            return False
+        return self.face_recognition_service.has_candidate(candidate_id)
+
     def _identity_key(self, identity: dict[str, Any] | None) -> str:
         if identity and identity.get("candidate_id"):
             return str(identity["candidate_id"])

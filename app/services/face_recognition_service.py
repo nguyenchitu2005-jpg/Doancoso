@@ -250,6 +250,21 @@ class FaceRecognitionService:
     def is_available(self) -> bool:
         return self._app is not None and bool(self._gallery_embeddings)
 
+    def reload_gallery(self) -> dict[str, Any]:
+        if self._app is None:
+            self._initialize()
+            return self.get_status()
+
+        try:
+            self._load_gallery_embeddings()
+            self._load_error = None if self._profiles_by_id else "Chua co du lieu face gallery."
+        except Exception as exc:  # pragma: no cover
+            self._load_error = f"Khong the nap face gallery: {exc}"
+        return self.get_status()
+
+    def has_candidate(self, candidate_id: str) -> bool:
+        return str(candidate_id or "").strip() in self._gallery_embeddings
+
     def get_status(self) -> dict[str, Any]:
         return {
             "enabled": self.is_available(),

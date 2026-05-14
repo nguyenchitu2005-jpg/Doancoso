@@ -292,7 +292,7 @@
                 <div class="panel-header">
                   <div>
                     <p class="panel-title">Tải lên Video Hậu Kiểm Mới</p>
-                    <p class="panel-subtitle">Co the chon nhieu video cung luc. Dinh dang ho tro: .mp4, .avi, .mov, .mkv</p>
+                    <p class="panel-subtitle">Co the bam chon nhieu lan de them video, khong can giu Ctrl. Dinh dang ho tro: .mp4, .avi, .mov, .mkv</p>
                   </div>
                 </div>
 
@@ -304,7 +304,7 @@
                       Kéo và thả tệp vào đây hoặc
                       <button type="button" class="text-link upload-trigger" data-file-trigger="review-video-file">chọn từ máy tính</button>
                     </p>
-                      <small>Co the tai len va hau kiem nhieu video trong cung mot lan gui</small>
+                      <small>Moi lan chon se duoc cong them vao danh sach hien tai</small>
                   </div>
                   <div class="form-actions">
                     <div class="selected-file-block">
@@ -339,37 +339,6 @@
                     <p>{{ detection_feedback.message }}</p>
                   </div>
                 {% endif %}
-
-                {% if recent_results %}
-                  <section class="review-history-panel">
-                    <div class="panel-header">
-                      <div>
-                        <p class="panel-title">Danh Sach Video Da Xu Ly</p>
-                        <p class="panel-subtitle">Moi video la mot phien hau kiem rieng. Chon de xem chi tiet.</p>
-                      </div>
-                    </div>
-                    <div id="review-session-list" class="review-session-list">
-                      {% for result in recent_results %}
-                        <button
-                          class="review-session-item {% if loop.first %}is-active{% endif %}"
-                          type="button"
-                          data-result-path="{{ result.result_path or '' }}"
-                          data-video-path="{{ result.video_path or '' }}"
-                        >
-                          <div class="review-session-copy">
-                            <strong>{{ result.video_name or "Video khong xac dinh" }}</strong>
-                            <p>{{ result.review_candidate.name or "Unknown Candidate" }}</p>
-                          </div>
-                          <div class="review-session-meta">
-                            <span class="chip">{{ result.incident_count }} su co</span>
-                            <small>{{ result.created_at_label }}</small>
-                          </div>
-                        </button>
-                      {% endfor %}
-                    </div>
-                  </section>
-                {% endif %}
-
               </article>
 
               <article id="review-video-stage" class="video-stage {% if latest_review.video_url %}has-video{% endif %}">
@@ -399,6 +368,36 @@
                 </div>
                 <video id="live-camera-player" class="review-video-player live-camera-player" autoplay playsinline muted hidden></video>
               </article>
+
+              {% if recent_results %}
+                <article class="panel review-history-panel">
+                  <div class="panel-header">
+                    <div>
+                      <p class="panel-title">Danh Sach Video Da Xu Ly</p>
+                      <p class="panel-subtitle">Moi video la mot phien hau kiem rieng. Chon de xem chi tiet.</p>
+                    </div>
+                  </div>
+                  <div id="review-session-list" class="review-session-list">
+                    {% for result in recent_results %}
+                      <button
+                        class="review-session-item {% if loop.first %}is-active{% endif %}"
+                        type="button"
+                        data-result-path="{{ result.result_path or '' }}"
+                        data-video-path="{{ result.video_path or '' }}"
+                      >
+                        <div class="review-session-copy">
+                          <strong>{{ result.video_name or "Video khong xac dinh" }}</strong>
+                          <p>{{ result.review_candidate.name or "Unknown Candidate" }}</p>
+                        </div>
+                        <div class="review-session-meta">
+                          <span class="chip">{{ result.incident_count }} su co</span>
+                          <small>{{ result.created_at_label }}</small>
+                        </div>
+                      </button>
+                    {% endfor %}
+                  </div>
+                </article>
+              {% endif %}
 
               <div class="candidate-grid">
                 <article class="panel candidate-card">
@@ -677,6 +676,94 @@
               <p id="settings-feedback" class="panel-subtitle" hidden></p>
             </article>
 
+            <article class="panel face-gallery-card">
+              <div class="config-card-header">
+                <span class="icon-badge"><span class="material-symbols-outlined">badge</span></span>
+                <div>
+                  <p class="panel-title">Hồ sơ nhận diện khuôn mặt</p>
+                  <p class="panel-subtitle">Thêm ảnh mẫu và thông tin thí sinh cho InsightFace.</p>
+                </div>
+              </div>
+
+              {% if candidate_feedback %}
+                <div class="feedback-card {{ candidate_feedback.status }}">
+                  <span class="material-symbols-outlined">
+                    {% if candidate_feedback.status == "success" %}check_circle{% elif candidate_feedback.status == "warning" %}info{% else %}error{% endif %}
+                  </span>
+                  <p>{{ candidate_feedback.message }}</p>
+                </div>
+              {% endif %}
+
+              <form class="candidate-form" action="{{ url_for('save_face_candidate') }}" method="post" enctype="multipart/form-data">
+                <div class="candidate-form-grid">
+                  <div class="field-block">
+                    <span>Mã thí sinh</span>
+                    <input id="candidate-id-input" class="settings-text-input" type="text" name="candidate_id" autocomplete="off" required>
+                  </div>
+                  <div class="field-block">
+                    <span>Họ tên</span>
+                    <input id="candidate-name-input" class="settings-text-input" type="text" name="candidate_name" autocomplete="name" required>
+                  </div>
+                  <div class="field-block">
+                    <span>Email</span>
+                    <input id="candidate-email-input" class="settings-text-input" type="email" name="candidate_email" autocomplete="email">
+                  </div>
+                  <div class="field-block">
+                    <span>Phòng thi</span>
+                    <input id="candidate-room-input" class="settings-text-input" type="text" name="candidate_room" autocomplete="off">
+                  </div>
+                </div>
+
+                <input id="candidate-image-file" class="file-input" type="file" name="candidate_image" accept=".jpg,.jpeg,.png,.bmp,.webp">
+                <div class="candidate-image-row">
+                  <button class="secondary-button upload-trigger" type="button" data-file-trigger="candidate-image-file">
+                    <span class="material-symbols-outlined">add_photo_alternate</span>
+                    Chọn ảnh khuôn mặt
+                  </button>
+                  <p id="candidate-image-name" class="selected-file-name">Chua chon anh nao</p>
+                </div>
+
+                <div class="form-actions">
+                  <p class="panel-subtitle">Ảnh nên rõ mặt, nhìn thẳng, một người trong ảnh.</p>
+                  <div class="candidate-action-buttons">
+                    <button id="candidate-clear-button" class="text-button" type="button" hidden>Thêm mới</button>
+                    <button id="candidate-delete-button" class="danger-button" type="button" hidden>Xóa thí sinh</button>
+                    <button id="candidate-submit-button" class="primary-button" type="submit" disabled>Thêm thí sinh</button>
+                  </div>
+                </div>
+              </form>
+              <form id="candidate-delete-form" action="{{ url_for('delete_face_candidate') }}" method="post" hidden>
+                <input id="candidate-delete-id-input" type="hidden" name="candidate_id" value="">
+              </form>
+
+              <div class="candidate-registry-list">
+                {% for candidate in face_candidates %}
+                  <button
+                    class="candidate-registry-item"
+                    type="button"
+                    data-candidate-id="{{ candidate.candidate_id }}"
+                    data-candidate-name="{{ candidate.name }}"
+                    data-candidate-email="{{ candidate.email }}"
+                    data-candidate-room="{{ candidate.room }}"
+                    data-candidate-image="{{ candidate.image }}"
+                  >
+                    <div>
+                      <strong>{{ candidate.name }}</strong>
+                      <small>{{ candidate.candidate_id }}{% if candidate.room %} · {{ candidate.room }}{% endif %}</small>
+                    </div>
+                    <span class="chip">{{ candidate.image }}</span>
+                  </button>
+                {% else %}
+                  <article class="candidate-registry-item is-empty">
+                    <div>
+                      <strong>Chưa có thí sinh</strong>
+                      <small>Thêm ảnh mẫu đầu tiên để bật nhận diện khuôn mặt.</small>
+                    </div>
+                  </article>
+                {% endfor %}
+              </div>
+            </article>
+
             <article class="panel metrics-card">
               <div class="config-card-header">
                 <span class="icon-badge"><span class="material-symbols-outlined">monitoring</span></span>
@@ -711,5 +798,5 @@
   <script id="dashboard-data" type="application/json">{{ dashboard | tojson }}</script>
   <script id="review-data" type="application/json">{{ latest_review | tojson }}</script>
   <script id="review-history-data" type="application/json">{{ recent_results | tojson }}</script>
-  <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260502e"></script>
+  <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260513a"></script>
 {% endblock %}

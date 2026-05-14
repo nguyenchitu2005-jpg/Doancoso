@@ -1,22 +1,23 @@
-
 [
-    {
-        "candidate_id": "2380602423",
-        "name": "Nguyen Chi Tu",
-        "email": "nguyenchitu@gmail.com",
-        "room": "Room A",
-        "image": "2380602423_NguyenChiTu.jpg"
-    },
-
-    {
+  {
+    "candidate_id": "2380602423",
+    "name": "Nguyễn Chí Tú",
+    "email": "nguyenchitu@gmail.com",
+    "room": "Room B",
+    "image": "2380602423_NguyenChiTu.jpg"
+  },
+  {
     "candidate_id": "2380602584",
     "name": "Nguyen Duong Truong Vu",
     "email": "truongvu05th01@gmail.com",
     "room": "Room A",
     "image": "2380602584_NguyenDuongTruongVu.jpg"
-   
-    }
+  },
+  {
+    "candidate_id": "2380601234",
+    "name": "Nguyễn Tiến Đạt",
+    "email": "nguyentiendat@gmail.com",
+    "room": "Room B",
+    "image": "2380601234_NguyenTienDat.jpg"
+  }
 ]
-
-
-

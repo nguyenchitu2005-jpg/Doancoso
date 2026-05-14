@@ -531,6 +531,7 @@ h3 {
 
 .primary-button,
 .secondary-button,
+.danger-button,
 .secondary-hero-button {
   display: inline-flex;
   align-items: center;
@@ -552,6 +553,12 @@ h3 {
   color: var(--primary);
   background: rgba(255, 255, 255, 0.9);
   box-shadow: inset 0 0 0 1px rgba(0, 23, 52, 0.08);
+}
+
+.danger-button {
+  color: #a11b1b;
+  background: rgba(186, 26, 26, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(186, 26, 26, 0.16);
 }
 
 .secondary-hero-button {
@@ -840,6 +847,11 @@ h3 {
   gap: 8px;
   text-align: center;
   padding: 24px;
+}
+
+.upload-dropzone.is-drag-over {
+  border-color: var(--secondary);
+  background: rgba(0, 95, 175, 0.08);
 }
 
 .upload-dropzone .material-symbols-outlined {
@@ -1569,9 +1581,24 @@ h3 {
 
 .config-card,
 .toggle-card,
-.metrics-card {
+.metrics-card,
+.face-gallery-card {
   display: grid;
   gap: 20px;
+}
+
+.face-gallery-card {
+  grid-column: 1 / -1;
+  align-items: start;
+}
+
+.face-gallery-card .config-card-header {
+  justify-content: flex-start;
+  align-items: center;
+}
+
+.face-gallery-card .config-card-header > div {
+  min-width: 0;
 }
 
 .icon-badge {
@@ -1636,6 +1663,119 @@ input[type="range"]::-webkit-slider-thumb {
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.72);
   line-height: 1.55;
+}
+
+.candidate-form {
+  display: grid;
+  gap: 18px;
+  padding: 18px;
+  border-radius: 22px;
+  background: var(--surface-container-low);
+}
+
+.candidate-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.face-gallery-card .field-block {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.face-gallery-card .field-block span {
+  color: var(--on-surface-variant);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.settings-text-input {
+  width: 100%;
+  min-height: 46px;
+  border: 1px solid rgba(0, 23, 52, 0.12);
+  border-radius: 14px;
+  padding: 0 14px;
+  color: var(--on-surface);
+  background: var(--surface-container-lowest);
+  outline: 0;
+}
+
+.settings-text-input:focus {
+  border-color: rgba(0, 44, 89, 0.5);
+  box-shadow: 0 0 0 3px rgba(208, 225, 251, 0.78);
+}
+
+.candidate-image-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: var(--surface-container-lowest);
+}
+
+.candidate-form .form-actions {
+  align-items: center;
+  padding-top: 2px;
+}
+
+.candidate-form .form-actions .panel-subtitle {
+  max-width: 56ch;
+}
+
+.candidate-action-buttons {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.candidate-registry-list {
+  display: grid;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.candidate-registry-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(0, 23, 52, 0.08);
+  background: var(--surface-container-lowest);
+  color: inherit;
+  text-align: left;
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+button.candidate-registry-item:hover,
+button.candidate-registry-item.is-selected {
+  border-color: rgba(0, 44, 89, 0.36);
+  background: rgba(227, 238, 251, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(0, 44, 89, 0.08);
+}
+
+.candidate-registry-item strong,
+.candidate-registry-item small {
+  display: block;
+}
+
+.candidate-registry-item small {
+  margin-top: 4px;
+  color: var(--on-surface-variant);
+}
+
+.candidate-registry-item .chip {
+  max-width: min(340px, 48vw);
+  overflow-wrap: anywhere;
+  text-align: center;
 }
 
 .toggle-row {
@@ -1753,6 +1893,10 @@ input[type="range"]::-webkit-slider-thumb {
   .incident-thumb {
     min-height: 220px;
   }
+
+  .candidate-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 980px) {
@@ -1794,10 +1938,33 @@ input[type="range"]::-webkit-slider-thumb {
   .sidebar-nav,
   .hero-kpis,
   .student-kpis,
+  .candidate-form-grid,
   .detail-grid,
   .mini-metrics,
   .room-grid {
     grid-template-columns: 1fr;
+  }
+
+  .candidate-registry-item {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .candidate-registry-item .chip {
+    max-width: 100%;
+  }
+
+  .candidate-image-row {
+    grid-template-columns: 1fr;
+  }
+
+  .candidate-image-row .secondary-button {
+    width: 100%;
+  }
+
+  .candidate-action-buttons {
+    display: grid;
+    width: 100%;
   }
 
   .search-field {
