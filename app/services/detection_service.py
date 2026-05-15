@@ -7,7 +7,7 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     import cv2
@@ -56,7 +56,7 @@ class DetectionService:
         enable_face_recognition: bool = True,
         min_signal_streak: int = 2,
         mediapipe_interval_samples: int = 2,
-        face_recognition_interval_samples: int = 60,
+        face_recognition_interval_samples: int = 90,
         face_identity_ttl_samples: int = 24,
     ) -> None:
         # Cau hinh runtime co the bi ghi de boi ai_settings.json trong luc app dang chay.
@@ -1547,7 +1547,11 @@ class DetectionService:
             "message": "Live frame analyzed.",
         }
 
-    def detect_from_video(self, video_path: str | Path) -> dict[str, Any]:
+    def detect_from_video(
+        self,
+        video_path: str | Path,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         # Luong hau kiem chinh:
         # - doc video
         # - lay mau theo interval
@@ -1557,6 +1561,28 @@ class DetectionService:
         source_path = Path(video_path)
         if not source_path.exists():
             raise FileNotFoundError(f"Khong tim thay video: {source_path}")
+
+        def notify_progress(
+            percent: float,
+            *,
+            reviewed: int = 0,
+            total: int = 0,
+            message: str = "",
+        ) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(
+                    {
+                        "percent": max(0.0, min(100.0, float(percent))),
+                        "reviewed_frames": reviewed,
+                        "total_frames": total,
+                        "video_name": source_path.name,
+                        "message": message,
+                    }
+                )
+            except Exception:
+                pass
 
         if cv2 is None:
             result: dict[str, Any] = {
@@ -1616,8 +1642,15 @@ class DetectionService:
         duration_seconds = round(frame_count / fps, 2) if frame_count > 0 else 0.0
         effective_sample_interval_seconds = self._review_sample_interval_seconds()
         sample_every_n_frames = max(1, int(round(fps * effective_sample_interval_seconds)))
+        total_review_frames = max(1, ((frame_count - 1) // sample_every_n_frames) + 1) if frame_count > 0 else 0
         snapshot_dir = self._prepare_snapshot_dir(source_path)
         processing_started_at = time.perf_counter()
+        notify_progress(
+            0,
+            reviewed=0,
+            total=total_review_frames,
+            message=f"Bat dau xu ly {source_path.name}",
+        )
 
         incidents: list[dict[str, Any]] = []
         reviewed_frames = 0
@@ -2136,7 +2169,21 @@ class DetectionService:
                         last_incident_time["behavior_model"] = timestamp_seconds
 
                 if len(incidents) >= self.max_incidents:
+                    notify_progress(
+                        100,
+                        reviewed=reviewed_frames,
+                        total=total_review_frames,
+                        message=f"Hoan tat xu ly {source_path.name}",
+                    )
                     break
+
+                if total_review_frames > 0:
+                    notify_progress(
+                        (reviewed_frames / total_review_frames) * 100.0,
+                        reviewed=reviewed_frames,
+                        total=total_review_frames,
+                        message=f"Dang xu ly {source_path.name}",
+                    )
 
                 frame_index += 1
         finally:
@@ -2246,4 +2293,10 @@ class DetectionService:
             ),
         }
         result["result_path"] = str(self._write_result(source_path, result))
+        notify_progress(
+            100,
+            reviewed=reviewed_frames,
+            total=total_review_frames,
+            message=f"Hoan tat xu ly {source_path.name}",
+        )
         return result

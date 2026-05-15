@@ -682,11 +682,18 @@ if (resetSettingsButton) {
 }
 
 const uploadTriggers = document.querySelectorAll(".upload-trigger");
+const uploadForm = document.querySelector(".upload-form");
+const uploadTokenInput = document.getElementById("upload-token-input");
 const uploadFileInput = document.getElementById("review-video-file");
 const uploadDropzone = document.querySelector(".upload-dropzone");
 const selectedFileName = document.getElementById("selected-file-name");
 const clearSelectedFileButton = document.getElementById("clear-selected-file");
 const uploadSubmitButton = document.getElementById("upload-submit-button");
+const uploadProgressBlock = document.getElementById("upload-progress-block");
+const uploadProgressLabel = document.getElementById("upload-progress-label");
+const uploadProgressValue = document.getElementById("upload-progress-value");
+const uploadProgressTrack = document.querySelector(".upload-progress-track");
+const uploadProgressBar = document.getElementById("upload-progress-bar");
 const candidateImageInput = document.getElementById("candidate-image-file");
 const candidateImageName = document.getElementById("candidate-image-name");
 const candidateSubmitButton = document.getElementById("candidate-submit-button");
@@ -702,6 +709,8 @@ const candidateRegistryItems = document.querySelectorAll(".candidate-registry-it
 let selectedFaceCandidateId = "";
 let selectedFaceCandidateImage = "";
 let selectedReviewVideoFiles = [];
+let uploadInProgress = false;
+let uploadProgressPollTimer = null;
 
 const acceptedReviewVideoExtensions = new Set(["mp4", "avi", "mov", "mkv"]);
 
@@ -745,8 +754,100 @@ function syncSelectedFileState() {
   }
 
   if (uploadSubmitButton) {
-    uploadSubmitButton.disabled = !hasFile;
+    uploadSubmitButton.disabled = !hasFile || uploadInProgress;
   }
+}
+
+function setUploadProgress(percent, label) {
+  const normalizedPercent = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+  const cleanedLabel = String(label || "Dang tai len...").replace(/\s*:?\s*\d{1,3}%\s*$/, "");
+  if (uploadProgressBlock) {
+    uploadProgressBlock.hidden = false;
+  }
+  if (uploadProgressLabel) {
+    uploadProgressLabel.textContent = cleanedLabel;
+  }
+  if (uploadProgressValue) {
+    uploadProgressValue.textContent = `${normalizedPercent}%`;
+  }
+  if (uploadProgressBar) {
+    uploadProgressBar.style.width = `${normalizedPercent}%`;
+  }
+  if (uploadProgressTrack) {
+    uploadProgressTrack.setAttribute("aria-valuenow", String(normalizedPercent));
+  }
+}
+
+function createUploadToken() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function stopUploadProgressPolling() {
+  if (uploadProgressPollTimer) {
+    window.clearInterval(uploadProgressPollTimer);
+    uploadProgressPollTimer = null;
+  }
+}
+
+async function pollUploadProcessingProgress(uploadToken) {
+  if (!uploadToken) {
+    return;
+  }
+  try {
+    const response = await fetch(`/review/upload/progress/${encodeURIComponent(uploadToken)}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      return;
+    }
+    const payload = await response.json();
+    const percent = Number(payload?.percent || 0);
+    const message = String(payload?.message || "Dang xu ly video...");
+    setUploadProgress(percent, message);
+    if (payload?.stage === "completed" || payload?.stage === "error") {
+      stopUploadProgressPolling();
+    }
+  } catch (error) {
+    // Polling is best-effort; the main upload request still controls final navigation.
+  }
+}
+
+function startUploadProgressPolling(uploadToken) {
+  stopUploadProgressPolling();
+  pollUploadProcessingProgress(uploadToken);
+  uploadProgressPollTimer = window.setInterval(() => {
+    pollUploadProcessingProgress(uploadToken);
+  }, 700);
+}
+
+function resetUploadProgress() {
+  stopUploadProgressPolling();
+  if (uploadProgressBlock) {
+    uploadProgressBlock.hidden = true;
+  }
+  setUploadProgress(0, "Dang tai len...");
+  if (uploadProgressBlock) {
+    uploadProgressBlock.hidden = true;
+  }
+}
+
+function setUploadControlsDisabled(disabled) {
+  uploadInProgress = Boolean(disabled);
+  if (uploadFileInput) {
+    uploadFileInput.disabled = uploadInProgress;
+  }
+  uploadTriggers.forEach((trigger) => {
+    if (trigger.dataset.fileTrigger === "review-video-file") {
+      trigger.disabled = uploadInProgress;
+    }
+  });
+  if (clearSelectedFileButton) {
+    clearSelectedFileButton.disabled = uploadInProgress;
+  }
+  syncSelectedFileState();
 }
 
 function getReviewVideoKey(file) {
@@ -796,6 +897,7 @@ if (clearSelectedFileButton && uploadFileInput) {
   clearSelectedFileButton.addEventListener("click", () => {
     selectedReviewVideoFiles = [];
     uploadFileInput.value = "";
+    resetUploadProgress();
     syncSelectedFileState();
   });
 }
@@ -814,6 +916,78 @@ if (uploadDropzone) {
     event.preventDefault();
     uploadDropzone.classList.remove("is-drag-over");
     addReviewVideoFiles(event.dataTransfer?.files || []);
+  });
+}
+
+if (uploadForm && uploadFileInput) {
+  uploadForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+
+    const hasFiles = uploadFileInput.files && uploadFileInput.files.length > 0;
+    if (!hasFiles || uploadInProgress) {
+      return;
+    }
+
+    const request = new XMLHttpRequest();
+    const uploadToken = createUploadToken();
+    if (uploadTokenInput) {
+      uploadTokenInput.value = uploadToken;
+    }
+    const formData = new FormData(uploadForm);
+
+    setUploadControlsDisabled(true);
+    setUploadProgress(0, "Dang tai len video...");
+
+    request.upload.addEventListener("progress", (progressEvent) => {
+      if (!progressEvent.lengthComputable) {
+        return;
+      }
+      const percent = (progressEvent.loaded / progressEvent.total) * 100;
+      setUploadProgress(percent, "Dang tai len video...");
+    });
+
+    request.upload.addEventListener("load", () => {
+      setUploadProgress(0, "Da tai len, dang bat dau xu ly video...");
+      if (uploadSubmitButton) {
+        uploadSubmitButton.textContent = "Dang xu ly video...";
+      }
+      startUploadProgressPolling(uploadToken);
+    });
+
+    request.addEventListener("load", () => {
+      stopUploadProgressPolling();
+      if (request.status >= 200 && request.status < 400) {
+        setUploadProgress(100, "Hoan tat xu ly video.");
+        window.location.href = request.responseURL || "/?tab=review";
+        return;
+      }
+      setUploadProgress(0, "Tai len that bai. Vui long thu lai.");
+      setUploadControlsDisabled(false);
+      if (uploadSubmitButton) {
+        uploadSubmitButton.textContent = "Tai va xu ly video";
+      }
+    });
+
+    request.addEventListener("error", () => {
+      stopUploadProgressPolling();
+      setUploadProgress(0, "Khong the tai len video. Kiem tra ket noi va thu lai.");
+      setUploadControlsDisabled(false);
+      if (uploadSubmitButton) {
+        uploadSubmitButton.textContent = "Tai va xu ly video";
+      }
+    });
+
+    request.addEventListener("abort", () => {
+      stopUploadProgressPolling();
+      resetUploadProgress();
+      setUploadControlsDisabled(false);
+      if (uploadSubmitButton) {
+        uploadSubmitButton.textContent = "Tai va xu ly video";
+      }
+    });
+
+    request.open(uploadForm.method || "POST", uploadForm.action);
+    request.send(formData);
   });
 }
 

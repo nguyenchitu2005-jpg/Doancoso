@@ -4,12 +4,15 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 from io import StringIO
 from pathlib import Path
+from time import time
 from urllib.parse import urlencode
+from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 
 try:
     import cv2
@@ -33,6 +36,7 @@ router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / "templates"))
 video_service = VideoService()
 detection_service = DetectionService()
+upload_progress_store: dict[str, dict] = {}
 VALID_TABS = {"overview", "review", "students", "settings"}
 DEFAULT_TAB = "settings"
 PAGE_TITLES = {
@@ -59,6 +63,26 @@ class ReviewDecisionPayload(BaseModel):
     decision: str
     result_path: str | None = None
     video_path: str | None = None
+
+
+def _set_upload_progress(
+    upload_token: str,
+    *,
+    stage: str,
+    percent: float,
+    message: str,
+    video_name: str = "",
+) -> None:
+    token = str(upload_token or "").strip()
+    if not token:
+        return
+    upload_progress_store[token] = {
+        "stage": stage,
+        "percent": max(0, min(100, round(float(percent), 1))),
+        "message": message,
+        "video_name": video_name,
+        "updated_at": time(),
+    }
 
 
 def _risk_priority(risk: str) -> int:
@@ -1206,11 +1230,38 @@ async def export_students_excel(request: Request) -> Response:
     )
 
 
+@router.get("/review/upload/progress/{upload_token}", tags=["web"])
+async def get_upload_progress(upload_token: str) -> JSONResponse:
+    token = str(upload_token or "").strip()
+    progress = upload_progress_store.get(token)
+    if progress is None:
+        return JSONResponse(
+            {
+                "stage": "waiting",
+                "percent": 0,
+                "message": "Dang cho bat dau xu ly video...",
+            }
+        )
+    return JSONResponse(progress)
+
+
 @router.post("/review/upload", name="upload_review_video", tags=["web"])
-async def upload_review_video(video_files: list[UploadFile] = File(...)) -> RedirectResponse:
+async def upload_review_video(
+    video_files: list[UploadFile] = File(...),
+    upload_token: str = Form(""),
+) -> RedirectResponse:
     try:
         if not video_files:
             raise ValueError("Vui long chon it nhat 1 video de tai len.")
+
+        token = str(upload_token or uuid4().hex).strip()
+        total_video_slots = max(1, len(video_files))
+        _set_upload_progress(
+            token,
+            stage="processing",
+            percent=0,
+            message="Da tai len, dang chuan bi xu ly video...",
+        )
 
         successful_uploads: list[dict] = []
         upload_failures: list[str] = []
@@ -1220,19 +1271,43 @@ async def upload_review_video(video_files: list[UploadFile] = File(...)) -> Redi
 
         detection_service.apply_runtime_settings(get_ai_settings())
 
-        for video_file in video_files:
+        for video_index, video_file in enumerate(video_files):
             try:
                 upload_info = await video_service.save_upload(video_file)
             except (ValueError, OSError) as upload_exc:
                 file_name = str(getattr(video_file, "filename", "") or "video_khong_xac_dinh")
                 upload_failures.append(f"{file_name}: {upload_exc}")
+                _set_upload_progress(
+                    token,
+                    stage="processing",
+                    percent=((video_index + 1) / total_video_slots) * 100,
+                    message=f"Bo qua {file_name}: {upload_exc}",
+                    video_name=file_name,
+                )
                 continue
 
             successful_uploads.append(upload_info)
             sql_storage_service.save_upload(upload_info)
 
             try:
-                detection_info = detection_service.detect_from_video(upload_info["path"])
+                original_filename = str(upload_info.get("original_filename") or "video")
+
+                def handle_detection_progress(progress: dict) -> None:
+                    local_percent = float(progress.get("percent") or 0.0)
+                    combined_percent = ((video_index + (local_percent / 100.0)) / total_video_slots) * 100.0
+                    _set_upload_progress(
+                        token,
+                        stage="processing",
+                        percent=combined_percent,
+                        message=f"Dang xu ly {original_filename}",
+                        video_name=original_filename,
+                    )
+
+                detection_info = await run_in_threadpool(
+                    detection_service.detect_from_video,
+                    upload_info["path"],
+                    progress_callback=handle_detection_progress,
+                )
                 sql_storage_service.save_review_result(detection_info, upload_info=upload_info)
                 if detection_info["status"] == "completed":
                     detection_successes.append(str(upload_info.get("original_filename") or "video"))
@@ -1242,6 +1317,14 @@ async def upload_review_video(video_files: list[UploadFile] = File(...)) -> Redi
                     )
             except (RuntimeError, FileNotFoundError, ValueError) as detection_exc:
                 detection_failures.append(f"{upload_info['original_filename']}: {detection_exc}")
+            finally:
+                _set_upload_progress(
+                    token,
+                    stage="processing",
+                    percent=((video_index + 1) / total_video_slots) * 100,
+                    message=f"Da xu ly xong {upload_info.get('original_filename') or 'video'}.",
+                    video_name=str(upload_info.get("original_filename") or "video"),
+                )
 
         upload_status = _build_batch_status(len(successful_uploads), len(upload_failures))
         upload_message = _build_upload_batch_message(successful_uploads, upload_failures)
@@ -1265,8 +1348,21 @@ async def upload_review_video(video_files: list[UploadFile] = File(...)) -> Redi
             query_params["detection_status"] = detection_status
             query_params["detection_message"] = detection_message
 
+        _set_upload_progress(
+            token,
+            stage="completed",
+            percent=100,
+            message="Hoan tat xu ly video.",
+        )
         query = urlencode(query_params)
     except ValueError as exc:
+        token = str(upload_token or "").strip()
+        _set_upload_progress(
+            token,
+            stage="error",
+            percent=0,
+            message=str(exc),
+        )
         query = urlencode(
             {
                 "tab": "review",

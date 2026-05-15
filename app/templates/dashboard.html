@@ -297,6 +297,7 @@
                 </div>
 
                 <form class="upload-form" action="{{ url_for('upload_review_video') }}" method="post" enctype="multipart/form-data">
+                  <input id="upload-token-input" type="hidden" name="upload_token" value="">
                   <input id="review-video-file" class="file-input" type="file" name="video_files" accept=".mp4,.avi,.mov,.mkv" multiple required>
                   <div class="upload-dropzone">
                     <span class="material-symbols-outlined">cloud_upload</span>
@@ -311,6 +312,15 @@
                       <div class="selected-file-row">
                         <p id="selected-file-name" class="selected-file-name">Chua chon video nao</p>
                         <button id="clear-selected-file" class="file-clear-button" type="button" hidden aria-label="Hủy tệp đã chọn">x</button>
+                      </div>
+                      <div id="upload-progress-block" class="upload-progress-block" hidden>
+                        <div class="upload-progress-meta">
+                          <span id="upload-progress-label">Dang tai len...</span>
+                          <strong id="upload-progress-value">0%</strong>
+                        </div>
+                        <div class="upload-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                          <span id="upload-progress-bar" class="upload-progress-bar"></span>
+                        </div>
                       </div>
                     </div>
                      <button id="upload-submit-button" class="primary-button" type="submit" disabled>Tai va xu ly video</button>
@@ -798,5 +808,5 @@
   <script id="dashboard-data" type="application/json">{{ dashboard | tojson }}</script>
   <script id="review-data" type="application/json">{{ latest_review | tojson }}</script>
   <script id="review-history-data" type="application/json">{{ recent_results | tojson }}</script>
-  <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260513a"></script>
+  <script src="{{ url_for('static', path='/js/dashboard.js') }}?v=20260515b"></script>
 {% endblock %}
